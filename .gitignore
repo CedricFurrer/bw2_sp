@@ -7,6 +7,14 @@
 *.o
 *.so
 
+# Python #
+##########
+*.pickle
+*.npy
+*.toc
+*.seg
+*MAIN_WRITELOCK
+
 # Packages #
 ############
 # it's better to unpack these files and commit the raw source

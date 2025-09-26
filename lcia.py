@@ -18,7 +18,7 @@ import utils
 
 starting: str = "------------"
 
-#%% Specific strategies
+#%% LCIA strategies
 
 # Convert categories value to a tuple
 def ensure_categories_are_tuples(db_var):
@@ -475,10 +475,6 @@ def add_top_category_factors_as_proxy_for_sub_categories(db_var, biosphere_dict:
                     exchanges_to_add += [exchange_to_add]
             
         ds["exchanges"] = copy.deepcopy(exc_copy + exchanges_to_add)
-        
-        # length_added = len(exchanges_to_add)
-        # if length_added != 0:
-        #     print("Added " + str(length_added) + " factor(s) to method " + str(ds["name"]))
     
     return db_var
 
@@ -642,8 +638,9 @@ def append_missing_regionalized_flows_to_methods(biosphere_standardized: dict,
 
 
 
-#%% Add LCIA methods which rely on weighting, damage and/or normalization factors
+#%% Import functions
 
+# Add LCIA methods which rely on weighting, damage and/or normalization factors
 def add_damage_normalization_weighting(original_method: tuple,
                                        normalization_factor: (float | int | None),
                                        weighting_factor: (float | int | None),
@@ -832,9 +829,6 @@ def register_biosphere(Brightway_project_name: str,
     
     # ... and write biosphere flows to a new biosphere database
     bw2data.Database(biosphere_db_name).write(deepcopied_biosphere_dict)
-
-
-
 
 
 def import_SimaPro_LCIA_methods(path_to_SimaPro_CSV_LCIA_files: pathlib.Path,

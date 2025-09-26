@@ -8,27 +8,13 @@ import bw2io
 import bw2data
 import utils
 import helper as hp
-# from variables import (TECHNOSPHERE_FIELDS,
-#                        BIOSPHERE_FIELDS_I,
-#                        BIOSPHERE_FIELDS_II,
-#                        BIOSPHERE_NAME_ABB,
-#                        BIOSPHERE_NAME_UNLINKED_ABB,
-#                        AGB_ABB,
-#                        AGF_ABB,
-#                        ECO_ABB,
-#                        SALCA_ABB,
-#                        WFLDB_ABB,
-#                        CASE_INSENSITIVE,
-#                        STRIP,
-#                        REMOVE_SPECIAL_CHARACTERS)
-
 
 #%%
-# It is pretty stupid, but we have to modify the ExchangeLinker function
+# We have to modify the ExchangeLinker function
 # We need to first copy the Linker function from bw2io. Then, we need to adapt the default fields of the 'parse_field' function within the Linker function
 # Why do we need to do that? Well, Brightway currently (!! it might change in the future) sets default parameters.
 # That means, when linking fields are per default first written to lowercase and stripped and special characters are removed
-# HOWEVER, we want to control that by using our parameters CASE_INSENSITIVE, STRIP, REMOVE_SPECIAL_CHARACTERS.
+# HOWEVER, we want to control that by using our parameters
 # In order to work properly, we therefore use our values in the 'parse_field' function and set those as a default.
 
 #%% Linking strategies
@@ -145,7 +131,7 @@ def link_biosphere_flows_externally(db_var,
                                     biosphere_db_name: str,
                                     biosphere_db_name_unlinked: (str | None),
                                     other_biosphere_databases: (tuple | None),
-                                    linking_order: tuple,
+                                    linking_order: (tuple | None),
                                     relink: bool,
                                     case_insensitive: bool,
                                     strip: bool,
@@ -171,16 +157,12 @@ def link_biosphere_flows_externally(db_var,
                     try: del exc["input"]
                     except: pass
     
-    # Extract all database names that should be used for linking, based on predefined ordering
-    database_list = utils._prepare_ordered_list_of_databases(BIO = biosphere_db_name,
-                                                             BIO_UNL = biosphere_db_name_unlinked,
-                                                             other_databases = other_biosphere_databases,
-                                                             order = linking_order
-                                                             )
+    # Database names that should be used for linking, based on predefined ordering
+    database_list: tuple = (biosphere_db_name, biosphere_db_name_unlinked) if linking_order is None else linking_order
     
     # If relink is True, we need to reverse the order. In that case, we need to first link the database with lowest priority. Otherwise, we possibly might overwrite linked flows from the highest priority database with flows from lower priority databases.
     if relink:
-        database_list = tuple(reversed(database_list))
+        database_list: tuple = tuple(reversed(database_list))
     
     # Retrieve the original function and set it as a custom variable that we can use in this script 
     custom_ExchangeLinker = bw2io.utils.ExchangeLinker
@@ -216,7 +198,7 @@ def link_biosphere_flows_externally(db_var,
 # Externally means, inventories and flows are linked with data from other already registered databases
 def link_activities_externally(db_var,
                                link_to_databases: tuple,
-                               linking_order: tuple,
+                               linking_order: (tuple | None),
                                link_production_exchanges: bool,
                                link_substitution_exchanges: bool,
                                link_technosphere_exchanges: bool,
