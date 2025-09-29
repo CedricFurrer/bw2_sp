@@ -53,6 +53,7 @@ Thumbs.db
 *.geojson
 *.json
 *.xlsx
+*.xls
 *.CSV
 *.csv
 
