@@ -9,18 +9,27 @@ import ast
 import copy
 import json
 import bw2io
+import bw2data
 import pathlib
 import hashlib
 import datetime
 import pandas as pd
 import helper as hp
-import linking
+import link
+from functools import partial
 from lcia import (ensure_categories_are_tuples,
                   create_SimaPro_fields,
                   normalize_simapro_biosphere_categories,
                   transformation_units,
                   add_location_to_biosphere_exchanges,
                   add_top_and_subcategory_fields_for_biosphere_flows)
+
+from defaults.categories import (BACKWARD_SIMAPRO_BIO_TOPCATEGORIES_MAPPING,
+                                 BACKWARD_SIMAPRO_BIO_SUBCATEGORIES_MAPPING)
+
+from defaults.units import (backward_unit_normalization_mapping)
+from defaults.model_type import (XML_TO_SIMAPRO_MODEL_TYPE_MAPPING,
+                                 XML_TO_SIMAPRO_PROCESS_TYPE_MAPPING)
 
 starting: str = "------------"
 
@@ -908,6 +917,281 @@ def migrate_from_excel_file(db_var, excel_migration_filepath: pathlib.Path | Non
     return new_db_var
 
 
+
+def assign_flow_field_as_code(db_var):
+    
+    """ Assign the value of field 'flow' (= UUID) as code for biosphere flows.
+    Only valid for XML data from ecoinvent!"""
+    
+    # Loop through each inventory in the database
+    for ds in db_var:
+        
+        # Loop through each exchange in 'ds'
+        for exc in ds["exchanges"]:
+            
+            # Check if the flow is of type biosphere
+            if exc["type"] == "biosphere":
+                
+                # If yes, add a new field 'code'. Use the value of field 'flow' as new value.
+                exc["code"] = exc["flow"]
+                
+                # Delete the old field 'flow'
+                del exc["flow"]
+            
+    return db_var
+
+
+
+# Function to assign the biosphere categories from the XML files to the exchange data during ecospold import
+def assign_categories_from_XML_to_biosphere_flows(db_var, biosphere_flows): # !!!
+    
+    # # First, extract the categories from the raw XML data
+    # biosphere_flows = XML_strategies.create_XML_biosphere()
+    
+    # Create a code-categories mapping for each biosphere flow
+    categories_mapping = {m["code"]: m["categories"] for m in biosphere_flows}
+    
+    # Loop through each inventory
+    for ds in db_var:
+        
+        # Loop through each exchange
+        for exc in ds["exchanges"]:
+            
+            # Check if the current exchange is of type 'biopshere'
+            if exc["type"] == "biosphere":
+                
+                # Assign the categories --> compare the current exchange code with the mapping dictionary and find the respective category match
+                exc["categories"] = categories_mapping[exc["code"]]
+                
+    return db_var
+    
+
+
+# Very specific function to the XML/ecospold data from ecoinvent
+# This function transform inventory and exchange dictionaries, so that we have a (almost) identical structure with dictionaries from SimaPro import
+def modify_fields_to_SimaPro_standard(db_var,
+                                      model_type: str,
+                                      process_type: str):
+    
+    # Check function input type
+    hp.check_function_input_type(modify_fields_to_SimaPro_standard, locals())
+    
+    if model_type not in XML_TO_SIMAPRO_MODEL_TYPE_MAPPING:
+        raise ValueError("Provided model type '' is not valid. Use one of the following model type(s) instead:\n - {}".format("n - ".join(list(XML_TO_SIMAPRO_MODEL_TYPE_MAPPING.keys()))))
+    
+    if process_type not in XML_TO_SIMAPRO_PROCESS_TYPE_MAPPING:
+        raise ValueError("Provided process type '' is not valid. Use one of the following process type(s) instead:\n - {}".format("n - ".join(list(XML_TO_SIMAPRO_PROCESS_TYPE_MAPPING.keys()))))
+    
+    # Initialize a mapping dictionary
+    tech_subs_mapping: dict = {}
+    
+    # Loop through each inventory in the database
+    for ds in db_var:
+        
+        # Extract original data of certain fields and store them in variables
+        name = ds["name"]
+        reference_product = ds["reference product"]
+        location = ds["location"]
+        
+        # Write new fields in SimaPro standard
+        ds["activity_name"] = name
+        ds["name"] = reference_product[0].upper() + reference_product.lower()[1:] + " {{COUNTRY}}| " + name.lower() + " | " + XML_TO_SIMAPRO_MODEL_TYPE_MAPPING[model_type] + ", " + XML_TO_SIMAPRO_PROCESS_TYPE_MAPPING[process_type]
+        ds["SimaPro_name"] = reference_product[0].upper() + reference_product.lower()[1:] + " {" + location + "}| " + name.lower() + " | " + XML_TO_SIMAPRO_MODEL_TYPE_MAPPING[model_type] + ", " + XML_TO_SIMAPRO_PROCESS_TYPE_MAPPING[process_type]
+        ds["categories"]= SIMAPRO_CATEGORY_TYPE_COMPARTMENT_MAPPING["material"]
+        ds["SimaPro_categories"] = SIMAPRO_CATEGORY_TYPE_COMPARTMENT_MAPPING["material"]
+        ds["SimaPro_category_type"] = "material"
+        ds["synonyms"] = tuple(ds["synonyms"])
+        ds["allocation"] = ds.get("properties", {}).get("allocation factor", {}).get("amount", 1)
+        ds["output amount"] = float(ds["production amount"] * ds["allocation"])
+        ds["code"] = ds["activity"] + "_" + ds["flow"] 
+        
+        # We try to backward normalize the ecoinvent unit to SimaPro standard
+        try:
+            ds["SimaPro_unit"] = backward_unit_normalization_mapping[ds["unit"]]
+            
+        except:
+            # If we fail, we need to raise an error
+            raise ValueError("Inventory unit (" + str(ds["unit"]) + ") could not be transformed to 'SimaPro_unit' (backward mapped).")
+
+        
+        # Delete unused fields
+        del ds["flow"], ds["activity"]
+        
+        # Convert list of classification systems into dictionary of tuples
+        # For ecoinvent data, we currently catch only the CPC and ISIC classification systems
+        classification_systems = ["CPC", "ISIC"]
+        
+        # Search for the classification systems and identify the respective tuple
+        classifications = [[(n, m[1:]) for n in classification_systems if re.search(n, m[0])][0] for m in ds.get("classifications", []) if re.search("|".join(classification_systems), m[0])]
+        
+        # If we could successfully identify the classification systems (list is not empty), we add them
+        if classifications != []:
+            
+            # We construct a dictionary for each classification system, where the first tuple element specifies the classification system
+            ds |= {system + "_classification": (system,) + cats for system, cats in classifications}
+            
+            # We use the first classification system in the list of classification systems found as SimaPro_classification
+            ds["SimaPro_classification"] = [("ecoinvent",) + ds.get(m + "_classification")[1:] for m in classification_systems if ds.get(m + "_classification") is not None][0]
+            
+            # We now delete the old classifications key, because we do not need it anymore
+            del ds["classifications"]
+        
+        else:
+            # If no classification systems were found, we add an unclassified tuple
+            ds["SimaPro_classification"] = ("ecoinvent", "not classified")
+         
+        # We now extract all the products of the current activity to a list
+        products = [m for m in ds["exchanges"] if m["type"] == "production"]
+        
+        # We check how many products were found. Important: we can only work with activities that have one production exchange. Otherwise, we need to raise an error
+        assert len(products) == 1, str(len(products)) + " production exchange(s) found"
+        
+        # We can now use the only list element as product
+        product = products[0]
+        
+        # We move the 'properties' field from the production exchange to the inventory 'ds' for better accessibility
+        if "properties" in product:
+            ds["properties"] = product["properties"]
+        
+        # We loop through each exchange to transform data
+        for exc in ds["exchanges"]:
+            
+            # # Remove 
+            # del exc["activity"], exc["flow"]
+            
+            # Modify the production exchange
+            if exc["type"] == "production":
+                
+                # Similar to the 'properties' field above, we loop through specific fields that we have modified in 'ds' and update the fields in the production exchange.
+                fields = ["output amount", "activity_name", "name", "SimaPro_name", "categories", "SimaPro_categories", "unit", "SimaPro_unit", "location"]
+                
+                # Modify fields
+                for field in fields:
+                    exc[field] = ds[field]
+                
+                # Modify allocation field manually
+                exc["allocation"] = ds["allocation"] * 100
+                
+                # Modify input field manually
+                exc["input"] = (ds["database"], ds["code"])
+
+            # Delete fields that we do not use anymore.
+            # Deletion applies to all types of exchanges
+            fields_to_delete = ["classifications", "properties"]
+            
+            # Loop through each field and delete, if possible
+            for del_field in fields_to_delete:
+                
+                # Try to delete. If field is not found, pass
+                try: del exc[del_field]
+                except: pass
+            
+            # Add certain fields for the biosphere flows
+            if exc["type"] == "biosphere":
+                
+                # Add location, if not existing. Take the GLO as default.
+                if "location" not in exc:
+                    exc["location"] = "GLO"
+                
+                # Create the SimaPro name from the original name together with the location, separated by a comma (this is the SimaPro standard)
+                if "SimaPro_name" not in exc:    
+                    exc["SimaPro_name"] = exc["name"] + (", " + exc["location"] if exc["location"] != "GLO" else "")
+                
+                # Backward map the unit to the SimaPro standard
+                if "SimaPro_unit" not in exc:
+                    exc["SimaPro_unit"] = backward_unit_normalization_mapping.get(exc["unit"], exc["unit"])
+                
+                # Backward map the categories to the SimaPro standard
+                if "SimaPro_categories" not in exc:
+                    
+                    # Extract the current categories
+                    categories = exc.get("categories")
+                    
+                    # Extract the top and sub categories and write to individual variables for mapping afterwards
+                    top_cat_orig = categories[0].lower() if categories is not None and len(categories) > 0 else ""
+                    sub_cat_orig = categories[1].lower() if categories is not None and len(categories) > 1 else ""
+                    
+                    # Try to map the top and sub categories 'back' to SimaPro standard using the mapping from Brightway
+                    top_cat = BACKWARD_SIMAPRO_BIO_TOPCATEGORIES_MAPPING.get(top_cat_orig, top_cat_orig)
+                    sub_cat = BACKWARD_SIMAPRO_BIO_SUBCATEGORIES_MAPPING.get(sub_cat_orig, sub_cat_orig)
+                    
+                    # If we find the a top category match, we were successful and write it to the biosphere exchange
+                    if top_cat != "":
+                        exc["SimaPro_categories"] = (top_cat, sub_cat) if sub_cat != "" else (top_cat,)
+                        
+                    else:
+                        # If there is no top category provided and we can not map it, raise error
+                        raise ValueError("No top category provided for biosphere flow:\n - 'SimaPro_name' = {}\n - 'unit' = {}\n - 'code' = {}".format(exc["SimaPro_name"], exc["unit"], exc["code"]))
+                        
+                        # # If we were not successful, we use the original categories as SimaPro categories
+                        # exc["SimaPro_categories"] = categories
+                    
+                # Add an empty field for the CAS number, if the field is not yet existing
+                if "CAS number" not in exc:
+                    exc["CAS number"] = ""
+            
+            # If the current exchange is of one type, that we don't know yet, let's raise an error to inform us
+            # Why do we do that? Because we might need to adjust our scripts!
+            known_exchange_types = ["production", "biosphere", "substitution", "technosphere"] 
+            assert exc["type"] in known_exchange_types, "Exchange type '" + str(exc["type"]) + "' not known. Consider checking and modifying the strategy 'modify_fields_to_SimaPro_standard'."
+        
+        # Add current inventory to mapping
+        tech_subs_mapping[ds["code"]] = ds
+    
+    # Specify the fields that we need to add or adapt in technosphere and substitution exchanges
+    fields_to_adapt_or_add_in_technosphere_and_substitution_exchanges = ["activity_name",
+                                                                         "name",
+                                                                         "SimaPro_name",
+                                                                         "categories",
+                                                                         "SimaPro_categories",
+                                                                         "unit",
+                                                                         "SimaPro_unit",
+                                                                         "location"]
+    
+    # We need to loop again through it to adapt the technosphere and substitution exchanges
+    for ds in db_var:
+        for exc in ds["exchanges"]:
+            
+            # Specify the field names that we want to delete because we do not use them anymore.
+            fields_to_delete = ["activity", "flow"]
+            
+            # We delete the activity and flow codes and go on if the current exchange is not of type 'technosphere' or 'substitution'
+            if exc["type"] not in ["technosphere", "substitution"]:
+                
+                # Loop through each field and delete, if possible
+                for del_field in fields_to_delete:
+                    
+                    # Try to delete. If field is not found, pass
+                    try: del exc[del_field]
+                    except: pass
+                
+                continue
+            
+            # We retrieve the inventory that corresponds to the current exchange
+            # The inventory stores the new information, that we need to adapt to the fields in the exchange
+            map_to = tech_subs_mapping[exc["activity"] + "_" + exc["flow"]]
+            
+            # We loop through each field specified beforehand that needs an update
+            for adapt_field in fields_to_adapt_or_add_in_technosphere_and_substitution_exchanges:
+                
+                # We retrieve the field value from the inventory
+                map_to_value = map_to.get(adapt_field)
+                
+                # We update the exchange field if the value is not None
+                if map_to_value is not None:
+                    exc[adapt_field] = map_to_value
+                    
+            # Loop through each field and delete, if possible
+            for del_field in fields_to_delete:
+                
+                # Try to delete. If field is not found, pass
+                try: del exc[del_field]
+                except: pass
+    
+    return db_var
+
+
+
 #%% Import functions
 
 def import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths: list,
@@ -1033,15 +1317,15 @@ def import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths: list,
     db: list[dict] = remove_exchanges_with_zero_amount(db)
     
     # Apply internal linking of activities
-    db: list[dict] = linking.link_activities_internally(db,
-                                                        production_exchanges = True,
-                                                        substitution_exchanges = True,
-                                                        technosphere_exchanges = True,
-                                                        relink = False,
-                                                        strip = True,
-                                                        case_insensitive = True,
-                                                        remove_special_characters = False,
-                                                        verbose = verbose)
+    db: list[dict] = link.link_activities_internally(db,
+                                                     production_exchanges = True,
+                                                     substitution_exchanges = True,
+                                                     technosphere_exchanges = True,
+                                                     relink = False,
+                                                     strip = True,
+                                                     case_insensitive = True,
+                                                     remove_special_characters = False,
+                                                     verbose = verbose)
     
     # As brightway importer object    
     db_as_obj: bw2io.importers.base_lci.LCIImporter = bw2io.importers.base_lci.LCIImporter(db_name)
@@ -1051,239 +1335,107 @@ def import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths: list,
 
 
 
-# # !!! TODO
-# #%% Function to import the ecoinvent database from XML files
-# def ecoinvent_XML_database_import_from_raw_data(Brightway_project_name: str,
-#                                                 ecoinvent_XML_filepath: pathlib.Path,
-#                                                 ecoinvent_database_name: str,
-#                                                 ecoinvent_database_name_abbreviated: str,
-#                                                 JSON_LCI_filepath: pathlib.Path,
-#                                                 JSON_migration_biosphere_filepath: (None | pathlib.Path),
-#                                                 import_regionalized_database_version: bool = True,
-#                                                 BRIGHTWAY2_DIR: pathlib.Path = PATH_VAR["BRIGHTWAY2_DIR"],
-#                                                 verbose: bool = True):
-    
-#     # Make variable check
-#     hp.check_function_input_type(ecoinvent_XML_database_import_from_raw_data, locals())
-    
-#     # Function to add 'GLO' to biosphere exchanges
-#     # We need to do that in order to be consistent with SimaPro flows. As a default, ecoinvent only uses 'GLO' flows
-#     def add_GLO_to_biosphere_exchanges(db_var):
-#         for ds in db_var:
-#             for exc in ds["exchanges"]:
-#                 if exc["type"] == "biosphere":
-#                     exc["location"] = "GLO"
-#         return db_var
-    
-#     # Change project path
-#     utils.change_brightway_project_directory(BRIGHTWAY2_DIR)
-    
-#     # Open Brightway2 project
-#     bw2data.projects.set_current(Brightway_project_name)
-    
-#     # Print statement
-#     if verbose:
-#         print(starting + "Data is imported into project:\n" + Brightway_project_name + "\n")
-    
-#     # Delete databases, if they exist
-#     # ... 'ecoinvent_database_name'
-#     if ecoinvent_database_name in bw2data.databases:
-        
-#         # Print message to console which database is deleted
-#         if verbose:
-#             print(starting + "Delete database: " + ecoinvent_database_name)
-        
-#         # Delete database
-#         del bw2data.databases[ecoinvent_database_name]
-        
-#         # Add line to console
-#         if verbose:
-#             print("")
-            
-#     # Use Brightway importer to import XML files
-#     if verbose:
-#         print(starting + "Import database from XML: " + ecoinvent_database_name)
-#     ecoinvent_db = bw2io.SingleOutputEcospold2Importer(str(ecoinvent_XML_filepath), ecoinvent_database_name, use_mp = False)
+#%% Function to import the ecoinvent database from XML files
 
-#     # Apply all Brightway strategies
-#     ecoinvent_db.apply_strategies(verbose = verbose)
+def create_XML_biosphere(filepath_ElementaryExchanges: pathlib.Path,
+                         biosphere_db_name: str):
+    
+    # Those packages are imported here specifically because they are only used for this function
+    from lxml import objectify
+    from bw2io.importers.ecospold2_biosphere import EMISSIONS_CATEGORIES
+    from bw2io.strategies import (drop_unspecified_subcategories,
+                                  normalize_units,
+                                  ensure_categories_are_tuples)
+    
+    # This funtion has been taken from the Brightway source script and copied here
+    # This function extracts the flow data from the XML elementary flow file from ecoinvent
+    def extract_flow_data(o):
+        
+        # For each flow, create a dictionary
+        ds = {
+            "categories": (
+                o.compartment.compartment.text,
+                o.compartment.subcompartment.text,
+            ),
+            "code": o.get("id"),
+            "CAS number": o.get("casNumber"),
+            "name": o.name.text,
+            "database": biosphere_db_name,
+            "exchanges": [],
+            "unit": o.unitName.text,
+        }
+        ds["type"] = EMISSIONS_CATEGORIES.get(
+            ds["categories"][0], ds["categories"][0]
+        )
+        return ds
 
-#     # Apply custom strategies
-#     ecoinvent_db.apply_strategy(strategies.XML_strategies.assign_flow_field_as_code, verbose = verbose)
-#     ecoinvent_db.apply_strategy(strategies.XML_strategies.assign_categories_from_XML_to_biosphere_flows, verbose = verbose)
-#     ecoinvent_db.apply_strategy(strategies.XML_strategies.modify_fields_to_SimaPro_standard, verbose = verbose)
-#     ecoinvent_db.apply_strategy(add_GLO_to_biosphere_exchanges, verbose = verbose)
-    
-#     # Apply biosphere migration
-#     ecoinvent_db.apply_strategy(partial(strategies.migration_strategies.migrate_from_JSON_file,
-#                                         JSON_migration_filepath = JSON_migration_biosphere_filepath), verbose = verbose)
-    
-#     ecoinvent_db.apply_strategy(partial(linking.remove_linking,
-#                                         production_exchanges = True,
-#                                         substitution_exchanges = True,
-#                                         technosphere_exchanges = True,
-#                                         biosphere_exchanges = True), verbose = verbose)
-    
-#     # Apply internal linking of activities
-#     ecoinvent_db.apply_strategy(partial(linking.link_activities_internally,
-#                                         production_exchanges = True,
-#                                         substitution_exchanges = True,
-#                                         technosphere_exchanges = True,
-#                                         relink = False,
-#                                         verbose = verbose), verbose = verbose)
-    
-#     # Apply external linking of biosphere flows
-#     ecoinvent_db.apply_strategy(partial(linking.link_biosphere_flows_externally,
-#                                         biosphere_connected_to_methods = True,
-#                                         biosphere_NOT_connected_to_methods = False,
-#                                         relink = False,
-#                                         verbose = verbose), verbose = verbose)
-    
-#     # Write unlinked biosphere flows to XLSX
-#     if verbose:
-#         print("\n" + starting + "Write unlinked flows")
-#     ecoinvent_db.write_excel(only_unlinked = True)
-    
-#     # Show statistic of current linking of database import
-#     if verbose:
-#         print("\n" + starting + "Linking statistics of current database import")
-#     ecoinvent_db.statistics()
-    
-#     # Add line to console
-#     if verbose:
-#         print("")    
-    
-#     # Make a new biosphere database for the flows which are currently not linked
-#     # Add unlinked biosphere flows with a custom function
-#     unlinked_biosphere_flows_final = utils.add_unlinked_flows_to_biosphere_database(ecoinvent_db,
-#                                                                                     verbose = verbose)
-    
-#     # Show statistic of current linking of database import
-#     if verbose:
-#         print("\n" + starting + "Linking statistics of current database import")
-#     ecoinvent_db.statistics()
-    
-#     # Write database
-#     if verbose:
-#         print(starting + "Write database: " + ecoinvent_database_name)
-#     ecoinvent_db.write_database()
-    
-#     # Print empty row
-#     if verbose:
-#         print("")
-        
-#     # If regionalized database version should be imported, do so
-#     if import_regionalized_database_version:
-        
-#         # Print statements
-#         if verbose:
-#             print(starting + "Import regionalized database version")
-#             print(starting + "Apply strategies")
-        
-#         # Create a new LCI importer object for the regionalized database
-#         ecoinvent_db_reg = bw2io.importers.base_lci.LCIImporter(copy.deepcopy(ecoinvent_database_name + REG_ADDITIONAL_NAME_FRAGMENT))
-        
-#         # Add the original inventory data from before to the LCI importer object
-#         ecoinvent_db_reg.data = [m for m in copy.deepcopy(ecoinvent_db)]
-        
-#         # Apply strategy to remove certain parameters
-#         ecoinvent_db_reg.apply_strategy(partial(strategies.mixed_strategies.eliminate_fields,
-#                                                 ds_fields = ["database", "input", "output"],
-#                                                 exc_fields = ["database", "input", "output"]), verbose = verbose)
-        
-#         # Apply strategy to change the name of the database parameter and to remove the linking (input fields)
-#         ecoinvent_db_reg.apply_strategy(partial(change_database_name_and_remove_code,
-#                                                 new_database_name = ecoinvent_database_name + REG_ADDITIONAL_NAME_FRAGMENT),
-#                                         verbose = verbose)
-        
-#         # Set new codes
-#         ecoinvent_db_reg.apply_strategy(partial(strategies.inventory_strategies.set_code,
-#                                                 fields = TECHNOSPHERE_FIELDS,
-#                                                 overwrite = True,
-#                                                 strip = STRIP,
-#                                                 case_insensitive = CASE_INSENSITIVE,
-#                                                 remove_special_characters = REMOVE_SPECIAL_CHARACTERS), verbose = verbose)
-        
-#         # Apply internal linking of activities
-#         ecoinvent_db_reg.apply_strategy(partial(linking.link_activities_internally,
-#                                                 production_exchanges = True,
-#                                                 substitution_exchanges = True,
-#                                                 technosphere_exchanges = True,
-#                                                 relink = False,
-#                                                 verbose = verbose), verbose = verbose)
-        
-#         # Apply external linking of biosphere flows
-#         ecoinvent_db_reg.apply_strategy(partial(linking.link_biosphere_flows_externally,
-#                                                 biosphere_connected_to_methods = True,
-#                                                 biosphere_NOT_connected_to_methods = True,
-#                                                 relink = False,
-#                                                 verbose = verbose), verbose = verbose)
-        
-#         # Show statistic of current linking of regionalized database import
-#         if verbose:
-#             print("\n" + starting + "Linking statistics of current regionalized database import")
-#         ecoinvent_db_reg.statistics()
-        
-#         # Write database
-#         print(starting + "Write database: " + ecoinvent_database_name + REG_ADDITIONAL_NAME_FRAGMENT)
-#         ecoinvent_db_reg.write_database()
-        
-#         # Print empty row
-#         if verbose:
-#             print("")
-            
-#     # Specify, whether a JSON object of the Brightway database should be written
-#     if write_JSON_file:
-        
-#         # Make variable of the whole database as dictionary where keys are the number of an inventory
-#         database_as_dict = {str(idx): m for idx, m in enumerate([m for m in ecoinvent_db])}
-        
-#         # Create the JSON object to be written
-#         json_database_object = json.dumps(database_as_dict, indent = 4)
-        
-#         # Write the database dictionary to a JSON file
-#         if verbose:
-#             print(starting + "Write JSON file: '" + str(ecoinvent_database_name_abbreviated + "_" + XML_FILENAME_FRAGMENT) + "'.json")
-#         with open(JSON_LCI_filepath / (ecoinvent_database_name_abbreviated + "_" + XML_FILENAME_FRAGMENT + ".json"), "w") as outfile:
-#             outfile.write(json_database_object)
-        
-#         # The JSON variable can be very big. Once the file has been written, we now remove the variable again
-#         del database_as_dict, json_database_object
-        
-#         # Extract the unlinked biosphere data used in the database to JSON
-#         # Rename keys
-#         database_as_dict_bio = {str(idx): m[1] for idx, m in enumerate(unlinked_biosphere_flows_final.items())}
+    # Read the XML file and get the roots
+    root = objectify.parse(open(filepath_ElementaryExchanges, encoding = "utf-8")).getroot()
 
-#         # Create the JSON object to be written
-#         json_database_object_bio = json.dumps(database_as_dict_bio, indent = 4)
-        
-#         # Write the unlinked biosphere data dictionary to a JSON file
-#         if verbose:
-#             print(starting + "Write JSON file: '" + BIOSPHERE_NAME_UNLINKED_ABB + "'.json")
-#         with open(JSON_LCI_filepath / (BIOSPHERE_NAME_UNLINKED_ABB + ".json"), "w") as outfile:
-#             outfile.write(json_database_object_bio)
-        
-#         # Write only if regionalized database version was imported
-#         if import_regionalized_database_version:
-            
-#             # Make variable of the whole database as dictionary where keys are the number of an inventory
-#             database_as_dict_reg = {str(idx): m for idx, m in enumerate([m for m in ecoinvent_db_reg])}
+    # Extract each elementary flow from the XML file with all corresponding fields
+    flow_data = bw2data.utils.recursive_str_to_unicode([extract_flow_data(ds) for ds in root.iterchildren()])
 
-#             # Create the JSON object to be written
-#             json_database_object_reg = json.dumps(database_as_dict_reg, indent = 4)
-            
-#             # Write the regionalized database dictionary to a JSON file
-#             if verbose:
-#                 print(starting + "Write JSON file: '" + str(ecoinvent_database_name_abbreviated + REG_ADDITIONAL_NAME_FRAGMENT_ABB + "_" + XML_FILENAME_FRAGMENT) + "'.json")
-#             with open(JSON_LCI_filepath / (ecoinvent_database_name_abbreviated + REG_ADDITIONAL_NAME_FRAGMENT_ABB + "_" + XML_FILENAME_FRAGMENT + ".json"), "w") as outfile:
-#                 outfile.write(json_database_object_reg)
-            
-#             # The JSON variable can be very big. Once the file has been written, we now remove the variable again
-#             del database_as_dict_reg, json_database_object_reg
-            
-#             # Print empty row
-#             if verbose:
-#                 print("")
+    # We apply some strategies
+    flow_data = normalize_units(copy.deepcopy(flow_data))
+    flow_data = drop_unspecified_subcategories(copy.deepcopy(flow_data))
+    flow_data = ensure_categories_are_tuples(copy.deepcopy(flow_data))
+    
+    return flow_data
+
+
+
+def import_XML_LCI_inventories(XML_LCI_filepath: pathlib.Path,
+                               db_name: str,
+                               biosphere_db_name: str,
+                               db_model_type_name: str,
+                               db_process_type_name: str,
+                               verbose: bool = True,
+                               ) -> bw2io.importers.ecospold2.SingleOutputEcospold2Importer:
+
+    # Make variable check
+    hp.check_function_input_type(import_XML_LCI_inventories, locals())
+    
+    # Function to add 'GLO' to biosphere exchanges
+    # We need to do that in order to be consistent with SimaPro flows. As a default, ecoinvent only uses 'GLO' flows
+    def add_GLO_to_biosphere_exchanges(db_var):
+        for ds in db_var:
+            for exc in ds["exchanges"]:
+                if exc["type"] == "biosphere":
+                    exc["location"] = "GLO"
+        return db_var
+    
+    # Use Brightway importer to import XML files
+    if verbose:
+        print(starting + "Import database from XML: " + db_name)
+    db: bw2io.SingleOutputEcospold2Importer = bw2io.SingleOutputEcospold2Importer(str(XML_LCI_filepath), db_name, use_mp = False)
+
+    # Apply all Brightway strategies
+    db.apply_strategies(verbose = verbose)
+
+    # Specify the filepath where the elementary flows are stored --> file is a XML file
+    filepath_ElementaryExchanges = XML_LCI_filepath.parent / "MasterData" / "ElementaryExchanges.xml"
+    
+    # Raise error if path to elementary exchanges files was not found
+    if not filepath_ElementaryExchanges.exists():
+        raise ValueError("Filepath to XML data for elementary exchanges does not exist. Please point to file 'ElementaryExchanges.xml'.")
+    
+    # Create XML biosphere data
+    xml_biosphere = create_XML_biosphere(filepath_ElementaryExchanges = filepath_ElementaryExchanges,
+                                         biosphere_db_name = biosphere_db_name)
+        
+    # Apply custom strategies
+    db.apply_strategy(assign_flow_field_as_code, verbose = verbose)
+    db.apply_strategy(partial(assign_categories_from_XML_to_biosphere_flows,
+                              biosphere_flows = xml_biosphere), verbose = verbose)
+    db.apply_strategy(partial(modify_fields_to_SimaPro_standard,
+                              model_type = db_model_type_name,
+                              process_type = db_process_type_name), verbose = verbose)
+    db.apply_strategy(add_GLO_to_biosphere_exchanges, verbose = verbose)
+    
+    return db
+    
+    
+
     
 
 

@@ -13,10 +13,13 @@ import pandas as pd
 from functools import partial
 import helper as hp
 from defaults.categories import (SIMAPRO_BIO_TOPCATEGORIES_MAPPING, SIMAPRO_BIO_SUBCATEGORIES_MAPPING)
+from defaults.units import (unit_transformation_mapping,
+                            backward_unit_normalization_mapping)
 from defaults.locations import (LOCATIONS)
 import utils
 
 starting: str = "------------"
+
 
 #%% LCIA strategies
 
@@ -104,17 +107,6 @@ def normalize_simapro_biosphere_categories(db_var):
 
 
 def transformation_units(db_var):
-    
-    # Create backward unit mappings
-    # ... import from Brightway2
-    unit_transformation_mapping = {m[0]: {"unit_transformed": m[1], "multiplier": m[2]} for m in bw2io.units.DEFAULT_UNITS_CONVERSION}
-    backward_unit_normalization_mapping_orig = {v: k for k, v in bw2io.units.UNITS_NORMALIZATION.items()}
-
-    # Add custom normalizations
-    additional_normalization_mapping = {"guest night": "day"}
-
-    # Merge
-    backward_unit_normalization_mapping = dict(**backward_unit_normalization_mapping_orig, **additional_normalization_mapping)
     
     # Loop through each inventory
     for ds in db_var:
@@ -666,6 +658,7 @@ def add_damage_normalization_weighting(original_method: tuple,
     # Print statement
     if verbose:
         print(starting + "Add damage, normalization and weighting factors from method '{}' and create new method '{}'".format(original_method, new_method))
+        print()
     
     new_exchanges: dict = {}
     
@@ -925,14 +918,29 @@ def import_SimaPro_LCIA_methods(path_to_SimaPro_CSV_LCIA_files: pathlib.Path,
 
 def register_SimaPro_LCIA_methods(imported_methods: list,
                                   biosphere_db_name: str,
+                                  Brightway_project_name: str,
+                                  BRIGHTWAY2_DIR: pathlib.Path,
                                   logs_output_path: pathlib.Path,
                                   verbose: bool = True):
     
     # Make variable check
     hp.check_function_input_type(register_SimaPro_LCIA_methods, locals())
     
+    # Switch Brightway2 project directory path
+    utils.change_brightway_project_directory(BRIGHTWAY2_DIR, verbose)
+    
+    # Open Brightway2 project
+    bw2data.projects.set_current(Brightway_project_name)
+    
     if biosphere_db_name not in bw2data.databases:
         raise ValueError("Biosphere database with the name '{}' not found/not registered in the Brightway background. Available databases are:\n - {}".format(biosphere_db_name, "\n - ".join(bw2data.databases)))
+    
+    # Delete methods if already existing
+    method_names: list[tuple[str]] = [m["name"] for m in imported_methods]
+    for method_name in method_names:
+        if method_name in bw2data.methods:
+            del bw2data.methods[method_name]
+            print("Deleted LCIA method '{}'".format(method_name))
     
     biosphere_list: list = [m.as_dict() for m in bw2data.Database(biosphere_db_name)]
     biosphere_dict: dict = {(m["database"], m["code"]): m for m in biosphere_list}
