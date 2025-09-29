@@ -66,4 +66,4 @@ notebook/notebook_data/*
 #################
 !data/lci/.gitkeep
 !data/lcia/.gitkeep
-!notebook/notebook_data/.gitkeep
+!notebook/notebook_data
