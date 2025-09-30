@@ -4,6 +4,7 @@ if __name__ == "__main__":
     import os
     os.chdir(pathlib.Path(__file__).parent)
 
+import json
 import copy
 import uuid
 import bw2io
@@ -168,6 +169,78 @@ def transformation_units(db_var):
                             # If we fail, we need to raise an error
                             raise ValueError("Exchange unit was transformed using the 'transformation_units' strategy BUT the field 'SimaPro_unit' (" + str(exc["SimaPro_unit"]) + ") could not be adjusted properly for the current exchange (backward mapped).")
             
+                    
+    return db_var
+
+
+
+
+def normalize_and_add_CAS_number(db_var):
+    
+    """ Brightway2 strategy, which adds CAS number from a mapping file to biosphere elementary flows if no CAS number is yet defined. 
+
+    Parameters
+    ----------
+    db_var : Brightway2 Backends Pewee Database
+        A Brightway2 Backends Pewee Database which should be modified.
+
+    Returns
+    -------
+    db_var : Modified Brightway2 Backends Pewee Database
+        A modified Brightway2 Backends Pewee Database is returned, where CAS numbers are added to biosphere elementary flows, if mapping was successful.
+
+    """
+    
+    # Make variable check
+    hp.check_function_input_type(normalize_and_add_CAS_number, locals())
+    
+    # -------------------
+    # Add CAS number to where no CAS number is currently identified
+     
+    # Import from JSON
+    with open(pathlib.Path(__file__).parent / "defaults" / "CAS.json", "r") as file:
+        CAS_mapping_orig: dict = json.load(file)
+
+    # Create a dictionary with key/value pairs, where key is a substance name and value is the respecting CAS-Nr. Make sure to have valid CAS-Nr.s
+    CAS_mapping: dict = {k : hp.give_back_correct_cas(v) for k, v in CAS_mapping_orig.items() if hp.give_back_correct_cas(v) is not None}
+    
+    # Loop through each inventory
+    for ds in db_var:
+        
+        # Loop through each exchange
+        for exc in ds.get("exchanges", []):
+            
+            # Only add to biosphere flows
+            if exc.get("type") == "biosphere":
+                
+                # Only add if no CAS number is available
+                if exc.get("CAS number") is None or exc.get("CAS number") == "" and "name" in exc:
+                    
+                    # Lookup if a CAS number can be found based on the elementary flow name given
+                    CAS_number_1: (str | None) = CAS_mapping.get(exc.get("name", ""))
+                    CAS_number_2: (str | None) = CAS_mapping.get(exc.get("name", "").lower())
+                    
+                    # If a CAS number has been found, add it to the current biosphere flow
+                    if CAS_number_1 is not None:
+                        exc["CAS number"]: str = CAS_number_1
+                        
+                    elif CAS_number_2 is not None:
+                        exc["CAS number"]: str = CAS_number_2
+                    
+                    else:
+                        exc["CAS number"]: None
+                        
+                else:
+                    # Otherwise, make sure that the existing CAS number is in the correct format and delete if not successfully transformed
+                    # Check if transformation yields something
+                    if hp.give_back_correct_cas(exc["CAS number"]) is None:
+                        
+                        # If transformation was unsuccessful and yielded None, add empty string
+                        exc["CAS number"]: None = None
+                        
+                    else:
+                        # Otherwise, transform and update the current key/value pair
+                        exc["CAS number"] = hp.give_back_correct_cas(exc["CAS number"])
                     
     return db_var
 
@@ -909,6 +982,9 @@ def import_SimaPro_LCIA_methods(path_to_SimaPro_CSV_LCIA_files: pathlib.Path,
     if verbose:
         print("Applying strategy: add_top_and_subcategory_fields_for_biosphere_flows")
     imported_methods = add_top_and_subcategory_fields_for_biosphere_flows(copy.deepcopy(imported_methods))
+    
+    # Normalize and add a CAS number from a mapping, if possible
+    imported_methods = normalize_and_add_CAS_number(copy.deepcopy(imported_methods))
     
     if verbose:
         print()

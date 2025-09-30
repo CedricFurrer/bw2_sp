@@ -22,7 +22,8 @@ from lcia import (ensure_categories_are_tuples,
                   normalize_simapro_biosphere_categories,
                   transformation_units,
                   add_location_to_biosphere_exchanges,
-                  add_top_and_subcategory_fields_for_biosphere_flows)
+                  add_top_and_subcategory_fields_for_biosphere_flows,
+                  normalize_and_add_CAS_number)
 
 from defaults.categories import (BACKWARD_SIMAPRO_BIO_TOPCATEGORIES_MAPPING,
                                  BACKWARD_SIMAPRO_BIO_SUBCATEGORIES_MAPPING)
@@ -945,9 +946,6 @@ def assign_flow_field_as_code(db_var):
 # Function to assign the biosphere categories from the XML files to the exchange data during ecospold import
 def assign_categories_from_XML_to_biosphere_flows(db_var, biosphere_flows): # !!!
     
-    # # First, extract the categories from the raw XML data
-    # biosphere_flows = XML_strategies.create_XML_biosphere()
-    
     # Create a code-categories mapping for each biosphere flow
     categories_mapping = {m["code"]: m["categories"] for m in biosphere_flows}
     
@@ -1268,6 +1266,9 @@ def import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths: list,
     # Therefore, we write the categories field into two separate fields, one for top category and one for sub category
     db: list[dict] = add_top_and_subcategory_fields_for_biosphere_flows(db)
     
+    # Normalize and add a CAS number from a mapping, if possible
+    db: list[dict] = normalize_and_add_CAS_number(db)
+    
     # ... SimaPro has no specific field to specify the location of an inventory. It is usually included in the name of an inventory. This is inconvenient.
     # for all inventories and exchange flows, names are checked with regex patterns if they contain a region. If yes, it is extracted as best as possible.
     # if it can not be extracted, it is specified as 'not identified'
@@ -1338,14 +1339,11 @@ def import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths: list,
 #%% Function to import the ecoinvent database from XML files
 
 def create_XML_biosphere(filepath_ElementaryExchanges: pathlib.Path,
-                         biosphere_db_name: str):
+                         biosphere_db_name: str) -> list[dict]:
     
     # Those packages are imported here specifically because they are only used for this function
     from lxml import objectify
     from bw2io.importers.ecospold2_biosphere import EMISSIONS_CATEGORIES
-    from bw2io.strategies import (drop_unspecified_subcategories,
-                                  normalize_units,
-                                  ensure_categories_are_tuples)
     
     # This funtion has been taken from the Brightway source script and copied here
     # This function extracts the flow data from the XML elementary flow file from ecoinvent
@@ -1357,9 +1355,12 @@ def create_XML_biosphere(filepath_ElementaryExchanges: pathlib.Path,
                 o.compartment.compartment.text,
                 o.compartment.subcompartment.text,
             ),
+            "top_category": o.compartment.compartment.text,
+            "sub_category": o.compartment.subcompartment.text,
             "code": o.get("id"),
             "CAS number": o.get("casNumber"),
             "name": o.name.text,
+            "location": "GLO",
             "database": biosphere_db_name,
             "exchanges": [],
             "unit": o.unitName.text,
@@ -1376,9 +1377,13 @@ def create_XML_biosphere(filepath_ElementaryExchanges: pathlib.Path,
     flow_data = bw2data.utils.recursive_str_to_unicode([extract_flow_data(ds) for ds in root.iterchildren()])
 
     # We apply some strategies
-    flow_data = normalize_units(copy.deepcopy(flow_data))
-    flow_data = drop_unspecified_subcategories(copy.deepcopy(flow_data))
-    flow_data = ensure_categories_are_tuples(copy.deepcopy(flow_data))
+    flow_data: list[dict] = ensure_categories_are_tuples(flow_data)
+    flow_data: list[dict] = normalize_and_add_CAS_number(flow_data)
+    flow_data: list[dict] = create_SimaPro_fields(flow_data, for_ds = True, for_exchanges = False)
+    flow_data: list[dict] = normalize_simapro_biosphere_categories(flow_data)
+    flow_data: list[dict] = bw2io.strategies.generic.normalize_units(flow_data)
+    flow_data: list[dict] = transformation_units(flow_data)
+    flow_data: list[dict] = add_top_and_subcategory_fields_for_biosphere_flows(flow_data)
     
     return flow_data
 
