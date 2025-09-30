@@ -186,8 +186,16 @@ def map_using_SBERT(items_to_map: tuple, items_to_map_to: tuple, max_number: int
     # Check function input type
     hp.check_function_input_type(map_using_SBERT, locals())
     
-    # model = SentenceTransformer("all-mpnet-base-v2")
-    model = SentenceTransformer("all-MiniLM-L6-v2")
+    # Path to where model might lay
+    path: pathlib.Path = pathlib.Path(__file__).parent / "defaults" / "all-MiniLM-L6-v2"
+    
+    # Check if path exists
+    if path.exists():
+        model = SentenceTransformer(str(path))
+    
+    else:
+        # model = SentenceTransformer("all-mpnet-base-v2")
+        model = SentenceTransformer("all-MiniLM-L6-v2")
 
     # Compute embedding for both lists
     embeddings1 = model.encode(items_to_map, convert_to_tensor=True)
