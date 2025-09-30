@@ -51,7 +51,43 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
     SBERT_mapping_3: dict = {prep((n["orig"],))[0]: n["mapped"] for idx, n in name_mapping_via_SBERT.iterrows() if prep((n["orig"],))[0] not in SBERT_mapping_1 and n["ranking"] == 2}
     
     if manually_checked_SBERTs is not None:
-        SBERT_mapping_2_validated: dict = {prep((m,))[0]: [{"mapped": n["mapped"], "multiplier": n["multiplier"]} for idx, n in manually_checked_SBERTs.query("orig == @m").iterrows()] for m in set(list(manually_checked_SBERTs)) if prep((m,))[0] not in SBERT_mapping_1}
+        # SBERT_mapping_2_validated: dict = {prep((m,))[0]: [{"mapped": n["mapped"], "multiplier": n["multiplier"]} for idx, n in manually_checked_SBERTs.query("orig == @m").iterrows()] for m in set(list(manually_checked_SBERTs)) if prep((m,))[0] not in SBERT_mapping_1}
+        
+        # Create a mapping from the dataframe
+        # Initialize empty dictionary
+        SBERT_mapping_2_validated: dict = {}
+        
+        # Loop through each FROM item
+        for FROM in set(list(manually_checked_SBERTs["orig"])):
+            
+            # Write to lowercase
+            FROM_lowered: str = prep((FROM,))[0]
+            
+            # Initialize dictionary key if not yet existing
+            if FROM_lowered not in SBERT_mapping_1 and FROM_lowered not in SBERT_mapping_2_validated:
+                SBERT_mapping_2_validated[FROM_lowered]: list[dict] = []
+            
+            # Loop through each TO
+            for idx, n in manually_checked_SBERTs.query("orig == @FROM").iterrows():
+                
+                # Extract and write to lowercase
+                TO_lowered: str = prep((n["mapped"],))[0]
+                multiplier: float = float(n["multiplier"])
+                
+                # Add to FROM_lowered
+                if FROM_lowered not in SBERT_mapping_1:
+                    SBERT_mapping_2_validated[FROM_lowered] += [{"mapped": TO_lowered, "multiplier": multiplier}]
+                
+                # Check if TO_lowered exists and continue if so
+                if TO_lowered in SBERT_mapping_1:
+                    continue
+                
+                # Register new key
+                if TO_lowered not in SBERT_mapping_2_validated:
+                    SBERT_mapping_2_validated[TO_lowered]: list[dict] = []
+                
+                # Add to TO_lowered
+                SBERT_mapping_2_validated[TO_lowered] += [{"mapped": FROM_lowered, "multiplier": multiplier}]
     else:
         SBERT_mapping_2_validated: dict = {} # !!! correct?
     

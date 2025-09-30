@@ -251,69 +251,69 @@ with open(filepath_biosphere_migration_data, "w") as outfile:
    outfile.write(biosphere_migration_data_in_json_format)
 
 #%% Import ecoinvent LCI database (XML)
-ecoinvent_db_xml: bw2io.importers.ecospold2.SingleOutputEcospold2Importer = import_XML_LCI_inventories(XML_LCI_filepath = LCI_ecoinvent_xml_folderpath / "ecoinvent 3.10_cutoff_ecoSpold02" / "datasets",
-                                                                                                       db_name = ecoinvent_db_name_xml,
-                                                                                                       biosphere_db_name = biosphere_db_name,
-                                                                                                       db_model_type_name = "cutoff",
-                                                                                                       db_process_type_name = "unit",
-                                                                                                       verbose = True)
-# Apply biosphere migration
-ecoinvent_db_xml.apply_strategy(partial(migrate_from_json_file,
-                                        JSON_migration_filepath = filepath_biosphere_migration_data),
-                                verbose = True)
+# ecoinvent_db_xml: bw2io.importers.ecospold2.SingleOutputEcospold2Importer = import_XML_LCI_inventories(XML_LCI_filepath = LCI_ecoinvent_xml_folderpath / "ecoinvent 3.10_cutoff_ecoSpold02" / "datasets",
+#                                                                                                        db_name = ecoinvent_db_name_xml,
+#                                                                                                        biosphere_db_name = biosphere_db_name,
+#                                                                                                        db_model_type_name = "cutoff",
+#                                                                                                        db_process_type_name = "unit",
+#                                                                                                        verbose = True)
+# # Apply biosphere migration
+# ecoinvent_db_xml.apply_strategy(partial(migrate_from_json_file,
+#                                         JSON_migration_filepath = filepath_biosphere_migration_data),
+#                                 verbose = True)
 
-ecoinvent_db_xml.apply_strategy(partial(link.remove_linking,
-                                        production_exchanges = True,
-                                        substitution_exchanges = True,
-                                        technosphere_exchanges = True,
-                                        biosphere_exchanges = True), verbose = True)
+# ecoinvent_db_xml.apply_strategy(partial(link.remove_linking,
+#                                         production_exchanges = True,
+#                                         substitution_exchanges = True,
+#                                         technosphere_exchanges = True,
+#                                         biosphere_exchanges = True), verbose = True)
 
-# Apply internal linking of activities
-ecoinvent_db_xml.apply_strategy(partial(link.link_activities_internally,
-                                        production_exchanges = True,
-                                        substitution_exchanges = True,
-                                        technosphere_exchanges = True,
-                                        relink = False,
-                                        case_insensitive = True,
-                                        strip = True,
-                                        remove_special_characters = False,
-                                        verbose = True), verbose = True)
+# # Apply internal linking of activities
+# ecoinvent_db_xml.apply_strategy(partial(link.link_activities_internally,
+#                                         production_exchanges = True,
+#                                         substitution_exchanges = True,
+#                                         technosphere_exchanges = True,
+#                                         relink = False,
+#                                         case_insensitive = True,
+#                                         strip = True,
+#                                         remove_special_characters = False,
+#                                         verbose = True), verbose = True)
 
-# Apply external linking of biosphere flows
-ecoinvent_db_xml.apply_strategy(partial(link.link_biosphere_flows_externally,
-                                        biosphere_connected_to_methods = True,
-                                        biosphere_NOT_connected_to_methods = False,
-                                        relink = False,
-                                        case_insensitive = True,
-                                        strip = True,
-                                        remove_special_characters = False,
-                                        verbose = True), verbose = True)
+# # Apply external linking of biosphere flows
+# ecoinvent_db_xml.apply_strategy(partial(link.link_biosphere_flows_externally,
+#                                         biosphere_connected_to_methods = True,
+#                                         biosphere_NOT_connected_to_methods = False,
+#                                         relink = False,
+#                                         case_insensitive = True,
+#                                         strip = True,
+#                                         remove_special_characters = False,
+#                                         verbose = True), verbose = True)
 
-# Write unlinked biosphere flows to XLSX
-print("\n-----------Write unlinked flows to excel file")
-ecoinvent_db_xml.write_excel(only_unlinked = True)
+# # Write unlinked biosphere flows to XLSX
+# print("\n-----------Write unlinked flows to excel file")
+# ecoinvent_db_xml.write_excel(only_unlinked = True)
     
-# Show statistic of current linking of database import
-print("\n-----------Linking statistics of current database import")
-ecoinvent_db_xml.statistics()
-print()
+# # Show statistic of current linking of database import
+# print("\n-----------Linking statistics of current database import")
+# ecoinvent_db_xml.statistics()
+# print()
  
-# Make a new biosphere database for the flows which are currently not linked
-# Add unlinked biosphere flows with a custom function
-unlinked_biosphere_flows: dict = utils.add_unlinked_flows_to_biosphere_database(db = ecoinvent_db_xml,
-                                                                                biosphere_db_name_unlinked = unlinked_biosphere_db_name,
-                                                                                biosphere_db_name = biosphere_db_name,
-                                                                                add_to_existing_database = True,
-                                                                                verbose = True)
-# Show statistic of current linking of database import
-print("\n-----------Linking statistics of current database import")
-ecoinvent_db_xml.statistics()
-print()
+# # Make a new biosphere database for the flows which are currently not linked
+# # Add unlinked biosphere flows with a custom function
+# unlinked_biosphere_flows: dict = utils.add_unlinked_flows_to_biosphere_database(db = ecoinvent_db_xml,
+#                                                                                 biosphere_db_name_unlinked = unlinked_biosphere_db_name,
+#                                                                                 biosphere_db_name = biosphere_db_name,
+#                                                                                 add_to_existing_database = True,
+#                                                                                 verbose = True)
+# # Show statistic of current linking of database import
+# print("\n-----------Linking statistics of current database import")
+# ecoinvent_db_xml.statistics()
+# print()
     
-# Write database
-print("\n-----------Write database: " + ecoinvent_db_name_xml)
-ecoinvent_db_xml.write_database()
-print()
+# # Write database
+# print("\n-----------Write database: " + ecoinvent_db_name_xml)
+# ecoinvent_db_xml.write_database()
+# print()
         
 
 
