@@ -48,8 +48,8 @@ Thumbs.db
 #########
 *.pyc
 
-# Files #
-#########
+# File extensions #
+###################
 *.geojson
 *.json
 *.xlsx
@@ -57,15 +57,24 @@ Thumbs.db
 *.CSV
 *.csv
 
+# Files #
+#########
+defaults/all-MiniLM-L6-v2.zip
+
 # Ignored folders #
 ###################
 data/lci/*
 data/lcia/*
 notebook/notebook_data/*
+defaults/all-MiniLM-L6-v2
 
 # Keep .gitkeep #
 #################
 !data/lci/.gitkeep
 !data/lcia/.gitkeep
+
+# Exclude or include folders and files #
+########################################
 !notebook/notebook_data
 !defaults/CAS.json
+
