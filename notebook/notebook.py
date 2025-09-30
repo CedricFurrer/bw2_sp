@@ -10,6 +10,7 @@ import utils
 import bw2io
 import bw2data
 import link
+import pandas as pd
 from functools import partial
 from lcia import (import_SimaPro_LCIA_methods,
                   register_biosphere,
@@ -21,20 +22,25 @@ from lci import (unregionalize,
                  import_SimaPro_LCI_inventories,
                  import_XML_LCI_inventories,
                  migrate_from_excel_file,
-                 migrate_from_JSON_file,
-                 create_XML_biosphere)
+                 migrate_from_json_file,
+                 create_XML_biosphere,
+                 )
 
 from harmonization import (create_harmonized_biosphere_migration,
-                           create_dataframe_of_elementary_flows_that_are_not_used_in_methods)
+                           elementary_flows_that_are_not_used_in_XML_methods)
 
+# from calculation import (LCA_Calculation)
 
 #%% File- and folderpaths, key variables
 
 # LCI and LCIA data
-LCIA_SimaPro_CSV_folderpath: pathlib.Path = here.parent / "data" / "lcia"
-ecoinvent_simapro_folderpath: pathlib.Path = here.parent / "data" / "lci" / "ECO_fromSimaPro"
-ecoinvent_xml_folderpath: pathlib.Path = here.parent / "data" / "lci" / "ECO_fromXML"
-agribalyse_simapro_folderpath: pathlib.Path = here.parent / "data" / "lci" / "AGB_fromSimaPro"
+LCIA_SimaPro_CSV_folderpath: pathlib.Path = here.parent / "data" / "lcia" / "fromSimaPro"
+LCIA_XML_folderpath: pathlib.Path = here.parent / "data" / "lcia" / "fromXML" / "ecoinvent 3.10_LCIA_implementation"
+LCIA_XML_filename: str = "LCIA Implementation 3.10.xlsx"
+LCIA_XML_sheetname: str = "CFs"
+LCI_ecoinvent_simapro_folderpath: pathlib.Path = here.parent / "data" / "lci" / "ECO_fromSimaPro"
+LCI_ecoinvent_xml_folderpath: pathlib.Path = here.parent / "data" / "lci" / "ECO_fromXML"
+LCI_agribalyse_simapro_folderpath: pathlib.Path = here.parent / "data" / "lci" / "AGB_fromSimaPro"
 
 # Generic and Brightway
 output_path: pathlib.Path = here / "notebook_data"
@@ -44,6 +50,9 @@ project_name: str = "notebook"
 # Migration
 filename_biosphere_migration_data: str = "biosphere_migration.json"
 filepath_biosphere_migration_data: pathlib.Path = output_path / filename_biosphere_migration_data
+
+# Other
+filename_SBERT_names_validated: str = "manually_checked_SBERT_names.xlsx"
 
 #%% Defaults for key variables
 biosphere_db_name: str = "biosphere3"
@@ -85,7 +94,7 @@ write_biosphere_flows_and_method_names_to_XLSX(biosphere_db_name = biosphere_db_
                                                verbose = True)
 
 #%% Import ecoinvent LCI database 
-ecoinvent_db_simapro: bw2io.importers.base_lci.LCIImporter = import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths = [ecoinvent_simapro_folderpath / "ECO.CSV"],
+ecoinvent_db_simapro: bw2io.importers.base_lci.LCIImporter = import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths = [LCI_ecoinvent_simapro_folderpath / "ECO.CSV"],
                                                                                             db_name = ecoinvent_db_name_simapro,
                                                                                             encoding = "latin-1",
                                                                                             delimiter = "\t",
@@ -104,7 +113,7 @@ ecoinvent_db_simapro.apply_strategy(partial(link.link_biosphere_flows_externally
                                             verbose = True), verbose = True)
 
 ecoinvent_db_simapro.apply_strategy(partial(migrate_from_excel_file,
-                                            excel_migration_filepath = ecoinvent_simapro_folderpath / "custom_migration_ECO.xlsx"),
+                                            excel_migration_filepath = LCI_ecoinvent_simapro_folderpath / "custom_migration_ECO.xlsx"),
                                     verbose = True)
 ecoinvent_db_simapro.apply_strategy(partial(link.link_activities_internally,
                                             production_exchanges = True,
@@ -115,6 +124,7 @@ ecoinvent_db_simapro.apply_strategy(partial(link.link_activities_internally,
                                             case_insensitive = True,
                                             remove_special_characters = False,
                                             verbose = True), verbose = True)
+print("\n------- Statistics")
 ecoinvent_db_simapro.statistics()
 
 # Make a new biosphere database for the flows which are currently not linked
@@ -124,20 +134,21 @@ unlinked_biosphere_flows: dict = utils.add_unlinked_flows_to_biosphere_database(
                                                                                 biosphere_db_name = biosphere_db_name,
                                                                                 add_to_existing_database = True,
                                                                                 verbose = True)
+print("\n------- Statistics")
 ecoinvent_db_simapro.statistics()
 
 # Delete ecoinvent database if already existing
 if ecoinvent_db_name_simapro in bw2data.databases:
-    print("------- Delete database: " + ecoinvent_db_name_simapro)
+    print("\n------- Delete database: " + ecoinvent_db_name_simapro)
     del bw2data.databases[ecoinvent_db_name_simapro]
 
 # Write database
-print("------- Write database: " + ecoinvent_db_name_simapro)
+print("\n------- Write database: " + ecoinvent_db_name_simapro)
 ecoinvent_db_simapro.write_database()
 
 
 #%% Import Agribalyse LCI database 
-agribalyse_db_simapro: bw2io.importers.base_lci.LCIImporter = import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths = [agribalyse_simapro_folderpath / "AGB.CSV"],
+agribalyse_db_simapro: bw2io.importers.base_lci.LCIImporter = import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths = [LCI_agribalyse_simapro_folderpath / "AGB.CSV"],
                                                                                              db_name = agribalyse_db_name_simapro,
                                                                                              encoding = "latin-1",
                                                                                              delimiter = "\t",
@@ -156,7 +167,7 @@ agribalyse_db_simapro.apply_strategy(partial(link.link_biosphere_flows_externall
                                              verbose = True), verbose = True)
 
 agribalyse_db_simapro.apply_strategy(partial(migrate_from_excel_file,
-                                             excel_migration_filepath = agribalyse_simapro_folderpath / "custom_migration_AGB.xlsx"),
+                                             excel_migration_filepath = LCI_agribalyse_simapro_folderpath / "custom_migration_AGB.xlsx"),
                                     verbose = True)
 agribalyse_db_simapro.apply_strategy(partial(link.link_activities_internally,
                                              production_exchanges = True,
@@ -167,6 +178,8 @@ agribalyse_db_simapro.apply_strategy(partial(link.link_activities_internally,
                                              case_insensitive = True,
                                              remove_special_characters = False,
                                              verbose = True), verbose = True)
+
+print("\n------- Statistics")
 agribalyse_db_simapro.statistics()
 
 # Make a new biosphere database for the flows which are currently not linked
@@ -176,33 +189,43 @@ unlinked_biosphere_flows: dict = utils.add_unlinked_flows_to_biosphere_database(
                                                                                 biosphere_db_name = biosphere_db_name,
                                                                                 add_to_existing_database = True,
                                                                                 verbose = True)
+print("\n------- Statistics")
 agribalyse_db_simapro.statistics()
 
 # Delete ecoinvent database if already existing
 if agribalyse_db_name_simapro in bw2data.databases:
-    print("------- Delete database: " + agribalyse_db_name_simapro)
+    print("\n------- Delete database: " + agribalyse_db_name_simapro)
     del bw2data.databases[agribalyse_db_name_simapro]
 
 # Write database
-print("------- Write database: " + agribalyse_db_name_simapro)
+print("\n------- Write database: " + agribalyse_db_name_simapro)
 agribalyse_db_simapro.write_database()
 
 
 #%% Create JSON files containing biosphere flow data
 
 # Create the biosphere from XML files
-biosphere_flows_from_XML: list[dict] = create_XML_biosphere(filepath_ElementaryExchanges = ecoinvent_xml_folderpath / "ecoinvent 3.10_cutoff_ecoSpold02" / "MasterData" / "ElementaryExchanges.xml",
+biosphere_flows_from_XML: list[dict] = create_XML_biosphere(filepath_ElementaryExchanges = LCI_ecoinvent_xml_folderpath / "ecoinvent 3.10_cutoff_ecoSpold02" / "MasterData" / "ElementaryExchanges.xml",
                                                             biosphere_db_name = biosphere_db_name)
 
+# Read excel file containing the LCIA methods from ecoinvent
+df_LCIA_methods_ecoinvent: pd.DataFrame = pd.read_excel(LCIA_XML_folderpath / LCIA_XML_filename, sheet_name = LCIA_XML_sheetname)
+
+# Create a list with biosphere flows that are not used in any of the ecoinvent methods
+not_used_flows: dict = elementary_flows_that_are_not_used_in_XML_methods(elementary_flows = biosphere_flows_from_XML, method_df = df_LCIA_methods_ecoinvent)
+
+# Exclude the flows that are not used, those do not need to be migrated
+biosphere_flows_from_XML_used: list[dict] = [m for m in biosphere_flows_from_XML if (m["database"], m["code"]) not in not_used_flows]
+
 # Create the JSON object to be written
-biosphere_flows_from_XML_json: dict = json.dumps({idx: m for idx, m in enumerate(biosphere_flows_from_XML)}, indent = 4)
+biosphere_flows_from_XML_used_json: dict = json.dumps({idx: m for idx, m in enumerate(biosphere_flows_from_XML_used)}, indent = 4)
 
 # Write the unlinked biosphere data dictionary to a JSON file
 with open(output_path / ("biosphere_flows_from_XML.json"), "w") as outfile:
-    outfile.write(biosphere_flows_from_XML_json)
+    outfile.write(biosphere_flows_from_XML_used_json)
 
 # Create the biosphere from registered biosphere database (here from SimaPro)
-biosphere_flows_from_SimaPro: list[dict] = bw2data.Database(biosphere_db_name)
+biosphere_flows_from_SimaPro: list[dict] = [dict(m) for m in bw2data.Database(biosphere_db_name)]
 
 # Create the JSON object to be written
 biosphere_flows_from_SimaPro_json: dict = json.dumps({idx: dict(m) for idx, m in enumerate(biosphere_flows_from_SimaPro)}, indent = 4)
@@ -211,15 +234,14 @@ biosphere_flows_from_SimaPro_json: dict = json.dumps({idx: dict(m) for idx, m in
 with open(output_path / ("biosphere_flows_from_SimaPro.json"), "w") as outfile:
     outfile.write(biosphere_flows_from_SimaPro_json)
 
-manually_checked_SBERTs: None = None
+# Load dataframe with manually checked biosphere flows
+manually_checked_SBERTs: pd.DataFrame = pd.read_excel(LCI_ecoinvent_xml_folderpath / filename_SBERT_names_validated)
 
 # Harmonize the two biospheres
-biosphere_migration_data: dict = create_harmonized_biosphere_migration(biosphere_flows_1 = biosphere_flows_from_SimaPro,
-                                                                       biosphere_flows_2 = biosphere_flows_from_XML,
-                                                                       manually_checked_SBERTs = None,
-                                                                       output_path = output_path,
-                                                                       ecoquery_username = None,
-                                                                       ecoquery_password = None)
+biosphere_migration_data: dict = create_harmonized_biosphere_migration(biosphere_flows_1 = biosphere_flows_from_XML_used,
+                                                                       biosphere_flows_2 = biosphere_flows_from_SimaPro,
+                                                                       manually_checked_SBERTs = manually_checked_SBERTs,
+                                                                       output_path = output_path)
 
 # Create the JSON object to be written
 biosphere_migration_data_in_json_format = json.dumps(biosphere_migration_data, indent = 3)
@@ -229,14 +251,14 @@ with open(filepath_biosphere_migration_data, "w") as outfile:
    outfile.write(biosphere_migration_data_in_json_format)
 
 #%% Import ecoinvent LCI database (XML)
-ecoinvent_db_xml: bw2io.importers.ecospold2.SingleOutputEcospold2Importer = import_XML_LCI_inventories(XML_LCI_filepath = ecoinvent_xml_folderpath / "ecoinvent 3.10_cutoff_ecoSpold02" / "datasets",
+ecoinvent_db_xml: bw2io.importers.ecospold2.SingleOutputEcospold2Importer = import_XML_LCI_inventories(XML_LCI_filepath = LCI_ecoinvent_xml_folderpath / "ecoinvent 3.10_cutoff_ecoSpold02" / "datasets",
                                                                                                        db_name = ecoinvent_db_name_xml,
                                                                                                        biosphere_db_name = biosphere_db_name,
                                                                                                        db_model_type_name = "cutoff",
                                                                                                        db_process_type_name = "unit",
                                                                                                        verbose = True)
 # Apply biosphere migration
-ecoinvent_db_xml.apply_strategy(partial(migrate_from_JSON_file,
+ecoinvent_db_xml.apply_strategy(partial(migrate_from_json_file,
                                         JSON_migration_filepath = filepath_biosphere_migration_data),
                                 verbose = True)
 
@@ -268,7 +290,7 @@ ecoinvent_db_xml.apply_strategy(partial(link.link_biosphere_flows_externally,
                                         verbose = True), verbose = True)
 
 # Write unlinked biosphere flows to XLSX
-print("\n-----------Write unlinked flows")
+print("\n-----------Write unlinked flows to excel file")
 ecoinvent_db_xml.write_excel(only_unlinked = True)
     
 # Show statistic of current linking of database import
@@ -298,3 +320,35 @@ print()
 #%% Next steps
 # Correspondence files
 # Update AGB ECO background
+
+
+#%% Run LCA calculation
+
+# mets: list[tuple] = [m for m in bw2data.methods][1:5]
+# invs: list[bw2data.backends.proxies.Activity] = [m for m in bw2data.Database(ecoinvent_db_name_simapro)][1:5]
+
+# calculation: LCA_Calculation = LCA_Calculation(activities = invs,
+#                                                methods = mets,
+#                                                functional_amount = 1.5,
+#                                                cut_off_percentage = None,
+#                                                exchange_level = 1,
+#                                                print_progress_bar = True)
+
+# calculation.calculate_all()
+# calculation.calculate_LCIA_scores()
+# calculation.extract_LCI_exchanges(exchange_level = 3)
+# calculation.calculate_LCIA_scores_of_exchanges(exchange_level = 2)
+# calculation.extract_LCI_emission_contribution()
+# calculation.extract_LCI_process_contribution()
+# calculation.calculate_LCIA_emission_contribution()
+# calculation.calculate_LCIA_process_contribution()
+# calculation.extract_characterization_factors()
+# results_dict_cleaned = calculation.get_result_dictionaries(True)
+# results_dict_not_cleaned = calculation.get_result_dictionaries(False)
+# results_df_cleaned = calculation.get_result_dataframes(True)
+# results_df_not_cleaned = calculation.get_result_dataframes(False)
+
+# calculation.write_results(path = output_path,
+#                           filename = "LCA_calculation_esults",
+#                           use_timestamp_in_filename = True)
+

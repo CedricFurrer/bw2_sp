@@ -1,7 +1,4 @@
 import copy
-import json
-import bw2io
-import bw2data
 import pathlib
 import pandas as pd
 
@@ -9,8 +6,7 @@ if __name__ == "__main__":
     import os
     os.chdir(pathlib.Path(__file__).parent)
 
-from utils import (map_using_SBERT,
-                   change_brightway_project_directory)
+from utils import (map_using_SBERT)
 from helper import (check_function_input_type)
 
 #%% Helper functions
@@ -29,12 +25,7 @@ def update_keys(dct: dict, string: str):
 def create_harmonized_biosphere_migration(biosphere_flows_1: list,
                                           biosphere_flows_2: list,
                                           manually_checked_SBERTs: (pd.DataFrame | None),
-                                          output_path: pathlib.Path,
-                                          ecoquery_username: (str | None),
-                                          ecoquery_password: (str | None)) -> dict:
-    
-    # 1 = ecoinvent XML # !!!
-    # 2 = SimaPro # !!!
+                                          output_path: pathlib.Path) -> dict:
     
     # Check function input type
     check_function_input_type(create_harmonized_biosphere_migration, locals())
@@ -47,7 +38,7 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
     name_mapping_via_SBERT: pd.DataFrame = map_using_SBERT(unique_names_1, unique_names_2, 3)
     
     # A mapping dictionary for biosphere flows using the unique fields 'name', 'top_category', 'sub_category', 'unit', 'location'
-    mapping: dict = {prep((m["name"], m["top_category"], m["sub_category"], m["unit"], m["location"])): m for m in biosphere_flows_2 if m["location"] == "GLO"}
+    biosphere_mapping: dict = {prep((m["name"], m["top_category"], m["sub_category"], m["unit"], m["location"])): m for m in biosphere_flows_2 if m["location"] == "GLO"}
     
     # Construct mapping dictionaries of ecoinvent to SimaPro names based on the results from the SBERT mapping beforehand
     # We are considering three different mappings. The first uses 100% correctly mapped names by only taking the mapped items with cosine score 1
@@ -62,22 +53,22 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
     if manually_checked_SBERTs is not None:
         SBERT_mapping_2_validated: dict = {prep((m,))[0]: [{"mapped": n["mapped"], "multiplier": n["multiplier"]} for idx, n in manually_checked_SBERTs.query("orig == @m").iterrows()] for m in set(list(manually_checked_SBERTs)) if prep((m,))[0] not in SBERT_mapping_1}
     else:
-        SBERT_mapping_2_validated: dict = SBERT_mapping_2 # !!! correct?
+        SBERT_mapping_2_validated: dict = {} # !!! correct?
     
     # Extract all unique names with the respective CAS number from both lists of biosphere flows
-    unique_names_CAS_1: set = set([(m["name"], m["CAS number"]) for idx, m in biosphere_flows_1 if m["CAS number"] is not None])
-    unique_names_CAS_2: set = set([(m["name"], m["CAS number"]) for idx, m in biosphere_flows_2 if m["CAS number"] is not None])
+    unique_names_CAS_1: set = set([(m["name"], m["CAS number"]) for m in biosphere_flows_1 if m["CAS number"] is not None])
+    unique_names_CAS_2: set = set([(m["name"], m["CAS number"]) for m in biosphere_flows_2 if m["CAS number"] is not None])
 
     # Construct a mapping dictionary for flows from biosphere 2 where key is the CAS number and value is the name of the flow
-    name_to_CAS_mapping: dict = {n: m for m, n in unique_names_CAS_2}
+    CAS_to_name_mapping: dict = {n: m for m, n in unique_names_CAS_2}
 
     # Construct a mapping file of biosphere 1 to biosphere 2 flow names via the CAS number
-    name_mapping_via_CAS: list[dict] = [{"orig": m[0],
-                                         "mapped": name_to_CAS_mapping.get(m[1]),
-                                         "score": 1 if name_to_CAS_mapping.get(m[1]) is not None else 0} for m in biosphere_flows_1]
+    name_mapping_via_CAS: list[dict] = [{"orig": name,
+                                         "mapped": CAS_to_name_mapping.get(CAS),
+                                         "score": 1 if CAS_to_name_mapping.get(CAS) is not None else 0} for name, CAS in unique_names_CAS_1]
 
     # Construct a mapping of biosphere 1 to biosphere 2 flow names via the CAS nr.
-    CAS_mapping: dict = {prep((n["orig"],))[0]: n["mapped"] for idx, n in name_mapping_via_CAS if n["score"] == 1}
+    CAS_mapping: dict = {prep((n["orig"],))[0]: n["mapped"] for n in name_mapping_via_CAS if n["score"] == 1}
 
     # Construct a custom unit mapping
     unit_mapping: dict = {"cubic meter": ("kilogram", 0.001),
@@ -123,7 +114,7 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
         name_CAS_mapped: str = CAS_mapping.get(prep((name,))[0], "")
         unit_mapped: str = unit_mapping.get(unit, (unit, float(1)))[0]
         unit_multiplier_mapped: float = unit_mapping.get(unit, (unit, float(1)))[1]
-        
+
         # Initialize a dictionary with the raw information
         initial_ID: dict = {"name": name,
                             "top_category": top_category,
@@ -191,9 +182,9 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
         # Find the closest match between two dicts
         found_orig: list[dict | None] = [get_closest_match(FROM_item = FROM_item,
                                                            TO_item = TO_item,
-                                                           mapping = mapping) for TO_item in prios_1_cleaned] + [get_closest_match(FROM_item = FROM_item,
-                                                                                                                                   TO_item = TO_item,
-                                                                                                                                   mapping = mapping) for TO_item in prios_2_cleaned]
+                                                           mapping = biosphere_mapping) for TO_item in prios_1_cleaned] + [get_closest_match(FROM_item = FROM_item,
+                                                                                                                                             TO_item = TO_item,
+                                                                                                                                             mapping = biosphere_mapping) for TO_item in prios_2_cleaned]
         # We remove the unmatched entries
         found_cleaned: list[dict] = [m for m in found_orig if m is not None]
         
@@ -218,27 +209,6 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
 
     # Add an ID of each flow
     result["ID"] = [tuple([tuple(map(lambda x: x.lower().strip(), flow.get("FROM_" + m))) if isinstance(flow.get("FROM_" + m), tuple) else flow.get("FROM_" + m, "").lower().strip() for m in ID_fields]) for flow in mapping]
-    
-    try:
-        # Extract biosphere flows which are not used in any LCIA methods
-        df_flows_not_in_methods, methods_mapping = create_dataframe_of_elementary_flows_that_are_not_used_in_methods(version = "3.10",
-                                                                                                                     model_type = "cutoff",
-                                                                                                                     output_path = pathlib.Path(__file__).parent / "notebook" / "notebook_data",
-                                                                                                                     username = ecoquery_username,
-                                                                                                                     password = ecoquery_password,
-                                                                                                                     delete_temp_project = False)
-    
-        # Make a dictionary of flows which were not found at all
-        no_methods_mapping = {k: v for k, v in methods_mapping.items() if v == "- "}
-        
-        # Check if the flows are used in LCIA methods in ecoinvent
-        result["flow_used_in_any_method_from_ecoinvent_XML"] = [False if m in no_methods_mapping else True for m in list(result["ID"])]
-    
-        # Write the methods in which the flows are used
-        result["method_names_where_flow_is_used"] = ["" if m in no_methods_mapping else methods_mapping[m] for m in list(result["ID"])]
-    
-    except:
-        pass
     
     # Construct two new dataframes
     # ... filter the results and show only the successfully mapped items
@@ -325,93 +295,116 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
 
 #%% Check which flows are not used in LCIA methods from ecoinvent XML
 
-# We create a dataframe for all flows that are found that are not used in any of the LCIA methods from ecoinvent XML
-def create_dataframe_of_elementary_flows_that_are_not_used_in_methods(version: str,
-                                                                      model_type: str,
-                                                                      output_path: pathlib.Path,
-                                                                      username: (str | None),
-                                                                      password: (str | None),
-                                                                      delete_temp_project: bool) -> (pd.DataFrame, dict):
+# We create a list for all flows that are not used in any of the LCIA methods from ecoinvent XML
+def elementary_flows_that_are_not_used_in_XML_methods(elementary_flows: list,
+                                                      method_df: pd.DataFrame) -> dict:
     
     # Check function input type
-    check_function_input_type(create_dataframe_of_elementary_flows_that_are_not_used_in_methods, locals())
+    check_function_input_type(elementary_flows_that_are_not_used_in_XML_methods, locals())
     
-    # We first read in all the data from ecoinvent XML
-    # We write all the elementary flows and the LCIA methods to a Brightway project
-    # Specify the folder where to store the Brightway project as well as the folder
-    temp_brightway_folder: str = "_TEMP"
-    temp_project: str = "TEMP_PROJECT"
-    temp_folder_path: pathlib.Path = output_path / temp_brightway_folder
+    method_data: list[dict] = method_df.fillna("").to_dict("records")
+    methods: dict = {}
     
-    # If the current directory is not yet available, create it first
-    temp_folder_path.mkdir(exist_ok = True)
-    
-    # We change the Brightway project folder path to the one specified in the variables
-    change_brightway_project_directory(output_path / temp_brightway_folder)
-    
-    # We open the project
-    bw2data.projects.set_current(temp_project)
-    
-    # Let's first check, if the biosphere is already available.
-    # If yes, we do not need to read it. Otherwise, we read the data directly from ecoinvent webpage by using the specific importer function
-    if "biosphere" not in bw2data.databases:
-        bw2io.ecoinvent.import_ecoinvent_release(version, model_type, username = username, password = password, lci = False, lcia = True, biosphere_name = "biosphere", use_mp = False)
-
-    # We extract all biosphere flows from the background database
-    all_biosphere_flows: list = bw2data.Database("biosphere")
-    
-    # We extract all the LCIA methods from the background
-    methods_dict: dict = {m: bw2data.Method(m).load() for m in bw2data.methods}
-    
-    # We initialize two variables
-    # The first one stores will store all biosphere flows which were not found in any of the methods
-    flows_not_in_methods: dict = {}
-    
-    # The second one will store the biosphere flow as a key, and the method name(s) where it was found as value
-    methods_mapping: dict = {}
-    
-    # We loop through each flow
-    for flow in all_biosphere_flows:
+    for flow in method_data:
+        method_name: tuple = (flow["Method"], flow["Category"], flow["Indicator"])
+        name: str = prep((flow["Name"],))[0]
+        categories: tuple = prep((flow["Compartment"], flow["Subcompartment"]))
         
-        # Initialize variables
-        # As a default, we say that the flow is not found
-        available: bool = False
-        
-        # We initialize a list where we store all the LCIA method names where the flow is used
-        methods_gathered: list = []
-        
-        # We loop through all LCIA methods and check, whether the current flow is used in that method or not
-        for method_name, loaded in methods_dict.items():
+        if (name, categories) not in methods:
+            methods[(name, categories)]: str = ""
             
-            # Check if the flow code is present in the method
-            if flow["code"] in [n[0][1] for n in loaded]:
-                
-                # If yes, we change the status to found (= True)
-                available: bool = True
-                
-                # We also add the method name to our list
-                methods_gathered += [", ".join(method_name)]
-                
-        # If the flow was not found, we store it to our list
-        if not available and flow["code"] not in flows_not_in_methods:
-            flows_not_in_methods[flow["code"]]: dict = {k: (" | ".join(v) if isinstance(v, list | tuple) else v) for k, v in flow.as_dict().items()}
-        
-        # We also append our methods mapping
-        # We first extract the fields of the current flow which make the flow unique
-        ID: tuple = tuple([tuple(map(lambda x: x.lower().strip(), flow.get(m))) if isinstance(flow.get(m), tuple) else flow.get(m, "").lower().strip() for m in ("name", "categories", "unit")])
-        
-        # We append the ID and all the methods where it was found/not found
-        methods_mapping[ID]: str = "- " + "\n- ".join(["'" + a + "'" for a in list(set(methods_gathered))])
+        methods[(name, categories)] += "\n - " + str(method_name)
     
-    # We write the flows to a dataframe
-    df_flows_not_in_methods: pd.DataFrame = pd.DataFrame(list(flows_not_in_methods.values()))
-
-    # If specified, we delete the project at the end
-    if delete_temp_project:
-        bw2data.projects.delete_project(temp_project, True)
+    not_used: dict = {(m["database"], m["code"]): m for m in elementary_flows if methods.get((prep((m["name"],))[0], prep(m["categories"]))) is None}
+    return not_used
     
-    return df_flows_not_in_methods, methods_mapping
 
+# # We create a dataframe for all flows that are found that are not used in any of the LCIA methods from ecoinvent XML
+# def create_dataframe_of_elementary_flows_that_are_not_used_in_XML_methods(version: str,
+#                                                                           model_type: str,
+#                                                                           output_path: pathlib.Path,
+#                                                                           username: (str | None),
+#                                                                           password: (str | None),
+#                                                                           delete_temp_project: bool) -> (pd.DataFrame, dict):
+    
+#     # Check function input type
+#     check_function_input_type(create_dataframe_of_elementary_flows_that_are_not_used_in_methods, locals())
+    
+#     # We first read in all the data from ecoinvent XML
+#     # We write all the elementary flows and the LCIA methods to a Brightway project
+#     # Specify the folder where to store the Brightway project as well as the folder
+#     temp_brightway_folder: str = "_TEMP"
+#     temp_project: str = "TEMP_PROJECT"
+#     temp_folder_path: pathlib.Path = output_path / temp_brightway_folder
+    
+#     # If the current directory is not yet available, create it first
+#     temp_folder_path.mkdir(exist_ok = True)
+    
+#     # We change the Brightway project folder path to the one specified in the variables
+#     change_brightway_project_directory(output_path / temp_brightway_folder)
+    
+#     # We open the project
+#     bw2data.projects.set_current(temp_project)
+    
+#     # Let's first check, if the biosphere is already available.
+#     # If yes, we do not need to read it. Otherwise, we read the data directly from ecoinvent webpage by using the specific importer function
+#     if "biosphere" not in bw2data.databases:
+#         bw2io.ecoinvent.import_ecoinvent_release(version, model_type, username = username, password = password, lci = False, lcia = True, biosphere_name = "biosphere", use_mp = False)
+
+#     # We extract all biosphere flows from the background database
+#     all_biosphere_flows: list = bw2data.Database("biosphere")
+    
+#     # We extract all the LCIA methods from the background
+#     methods_dict: dict = {m: bw2data.Method(m).load() for m in bw2data.methods}
+    
+#     # We initialize two variables
+#     # The first one stores will store all biosphere flows which were not found in any of the methods
+#     flows_not_in_methods: dict = {}
+    
+#     # The second one will store the biosphere flow as a key, and the method name(s) where it was found as value
+#     methods_mapping: dict = {}
+    
+#     # We loop through each flow
+#     for flow in all_biosphere_flows:
+        
+#         # Initialize variables
+#         # As a default, we say that the flow is not found
+#         available: bool = False
+        
+#         # We initialize a list where we store all the LCIA method names where the flow is used
+#         methods_gathered: list = []
+        
+#         # We loop through all LCIA methods and check, whether the current flow is used in that method or not
+#         for method_name, loaded in methods_dict.items():
+            
+#             # Check if the flow code is present in the method
+#             if flow["code"] in [n[0][1] for n in loaded]:
+                
+#                 # If yes, we change the status to found (= True)
+#                 available: bool = True
+                
+#                 # We also add the method name to our list
+#                 methods_gathered += [", ".join(method_name)]
+                
+#         # If the flow was not found, we store it to our list
+#         if not available and flow["code"] not in flows_not_in_methods:
+#             flows_not_in_methods[flow["code"]]: dict = {k: (" | ".join(v) if isinstance(v, list | tuple) else v) for k, v in flow.as_dict().items()}
+        
+#         # We also append our methods mapping
+#         # We first extract the fields of the current flow which make the flow unique
+#         ID: tuple = tuple([tuple(map(lambda x: x.lower().strip(), flow.get(m))) if isinstance(flow.get(m), tuple) else flow.get(m, "").lower().strip() for m in ("name", "categories", "unit")])
+        
+#         # We append the ID and all the methods where it was found/not found
+#         methods_mapping[ID]: str = "- " + "\n- ".join(["'" + a + "'" for a in list(set(methods_gathered))])
+    
+#     # We write the flows to a dataframe
+#     df_flows_not_in_methods: pd.DataFrame = pd.DataFrame(list(flows_not_in_methods.values()))
+
+#     # If specified, we delete the project at the end
+#     if delete_temp_project:
+#         bw2data.projects.delete_project(temp_project, True)
+    
+#     return df_flows_not_in_methods, methods_mapping
 
 
 
