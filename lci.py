@@ -777,7 +777,11 @@ def apply_migration_mapping(db_var, fields: tuple, migration_mapping: dict):
     # Amount fields to which the 'multiplier' should be applied to
     amount_fields_ds = ["production amount", "output amount"]
     amount_fields_exc = ["amount", "loc", "scale", "shape", "minimum", "maximum"]
-
+    
+    # Migration counter
+    n_ds: int = 0
+    n_exc: int = 0
+    
     # Loop through each element in the current database data (inventory)
     for ds in db_var:
         
@@ -809,6 +813,9 @@ def apply_migration_mapping(db_var, fields: tuple, migration_mapping: dict):
                     
                 # We replace (or add if not existing) the values of the keys in the inventory
                 ds[ds_k_new] = ds_v_new
+                
+            # Increase counter
+            n_ds += 1
                 
         except:
             # If we encounter a key error, we go on.
@@ -853,11 +860,17 @@ def apply_migration_mapping(db_var, fields: tuple, migration_mapping: dict):
                     # We replace (or add if not existing) the values of the keys in the exchange
                     exc[exc_k_new] = exc_v_new
                     
+                # Increase counter
+                n_exc += 1
+                    
             except:
                 # If we encounter a key error, we go on.
                 # A key error means, there is either no corresponding item for the current exchange in the migration mapping
                 # or some of the fields are not present in the exchange
                 pass
+    
+    # Print the amount of migrated ds and exc
+    print("Migrated {} inventories and {} exchanges".format(n_ds, n_exc))
             
     return db_var
 
@@ -1338,8 +1351,8 @@ def import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths: list,
 
 #%% Function to import the ecoinvent database from XML files
 
-def create_XML_biosphere(filepath_ElementaryExchanges: pathlib.Path,
-                         biosphere_db_name: str) -> list[dict]:
+def create_XML_biosphere_from_elmentary_exchanges_file(filepath_ElementaryExchanges: pathlib.Path,
+                                                       biosphere_db_name: str) -> list[dict]:
     
     # Those packages are imported here specifically because they are only used for this function
     from lxml import objectify
@@ -1388,6 +1401,24 @@ def create_XML_biosphere(filepath_ElementaryExchanges: pathlib.Path,
     return flow_data
 
 
+def create_XML_biosphere_from_LCI(db: bw2io.importers.ecospold2.SingleOutputEcospold2Importer,
+                                  biosphere_db_name: str) -> list:
+    
+    db_copied: bw2io.importers.ecospold2.SingleOutputEcospold2Importer = copy.deepcopy(db)
+    
+    db_copied: list[dict] = add_top_and_subcategory_fields_for_biosphere_flows(db_copied)
+    biosphere_exchanges: dict = {}
+    
+    for ds in db_copied:
+        for exc in ds["exchanges"]:
+            if exc["type"] == "biosphere":
+                ID: tuple = (exc["name"], exc["top_category"], exc["sub_category"], exc["unit"], exc["location"])
+                if ID not in biosphere_exchanges:
+                    biosphere_exchanges[ID]: dict = {**exc, **{"database": biosphere_db_name}}
+    
+    return list(biosphere_exchanges.values())
+
+
 
 def import_XML_LCI_inventories(XML_LCI_filepath: pathlib.Path,
                                db_name: str,
@@ -1425,13 +1456,14 @@ def import_XML_LCI_inventories(XML_LCI_filepath: pathlib.Path,
         raise ValueError("Filepath to XML data for elementary exchanges does not exist. Please point to file 'ElementaryExchanges.xml'.")
     
     # Create XML biosphere data
-    xml_biosphere = create_XML_biosphere(filepath_ElementaryExchanges = filepath_ElementaryExchanges,
-                                         biosphere_db_name = biosphere_db_name)
+    xml_biosphere = create_XML_biosphere_from_elmentary_exchanges_file(filepath_ElementaryExchanges = filepath_ElementaryExchanges,
+                                                                       biosphere_db_name = biosphere_db_name)
         
     # Apply custom strategies
     db.apply_strategy(assign_flow_field_as_code, verbose = verbose)
     db.apply_strategy(partial(assign_categories_from_XML_to_biosphere_flows,
                               biosphere_flows = xml_biosphere), verbose = verbose)
+    db.apply_strategy(partial(add_top_and_subcategory_fields_for_biosphere_flows, remove_initial_category_field = False))
     db.apply_strategy(partial(modify_fields_to_SimaPro_standard,
                               model_type = db_model_type_name,
                               process_type = db_process_type_name), verbose = verbose)
@@ -1440,9 +1472,5 @@ def import_XML_LCI_inventories(XML_LCI_filepath: pathlib.Path,
     return db
     
     
-
-    
-
-
 
 

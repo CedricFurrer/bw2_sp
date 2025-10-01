@@ -1,3 +1,4 @@
+import re
 import copy
 import pathlib
 import pandas as pd
@@ -18,6 +19,130 @@ def prep(fields: tuple):
 # Add additional string to the beginning of the keys of a dictionary
 def update_keys(dct: dict, string: str):
     return {string + k: v for k, v in dct.items()}
+
+
+# A function to extract the ecoinvent activity and product UUID's from the comment fields of SimaPro inventories
+def extract_ecoinvent_UUID_from_SimaPro_comment_field(db_var):
+    
+    # Loop through each inventory
+    for ds in db_var:
+        
+        # Extract the comment field of the current inventory
+        comment_field: (str | None) = ds.get("simapro metadata", {}).get("Comment")
+        
+        # If there is no comment field available, we add None's for activity code and reference product code and go to the next inventory because we can not do anyting
+        if comment_field is None:
+            ds["activity_code"]: None = None
+            ds["reference_product_code"]: None = None
+            continue
+        
+        # We construct a specific pattern that matches the logic of how activity and product UUID is stored in the comment field of a SimaPro ecoinvent inventory
+        pattern: str = ("^(.*)"
+                        "(ource\:)"
+                        "( )?"
+                        "(.*\_)?"
+                        "(?P<activity_code>[A-Za-z0-9\-]{36})"
+                        "(\_)"
+                        "(?P<reference_product_code>[A-Za-z0-9\-]{36})"
+                        "(\.spold)"
+                        "(.*)?$")
+        
+        # Apply the pattern using regex
+        extracted = re.match(pattern, comment_field)
+        
+        # If the pattern does not match, we go to the next item
+        if extracted is None:
+            ds["activity_code"]: None = None
+            ds["reference_product_code"]: None = None
+            continue
+        
+        # Otherwise, we add the found data
+        ds["activity_code"]: str = extracted["activity_code"]
+        ds["reference_product_code"]: str = extracted["reference_product_code"]
+            
+    return db_var
+
+
+# Break SimaPro names of ecoinvent inventories into the respective fragments of informations
+def identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories(db_var,
+                                                                cut_patterns: tuple = (" - copied", " - copies")):
+    
+    # Regex pattern to detoxify the SimaPro names
+    # ecoinvent specific!
+    pattern_to_detoxify_ecoinvent_name_used_in_SimaPro = ("^"
+                                                          "(?P<reference_product>.*)"
+                                                          "\{"
+                                                          "(?P<location>.*)"
+                                                          "\}"
+                                                          "\|"
+                                                          "(?P<activity>.*)"
+                                                          "\|"
+                                                          "( )?"
+                                                          "(?P<system_model>[A-Za-z\-]+)"
+                                                          "(\, | |\,)??"
+                                                          "(?P<process_type>(u|U|s|S))??"
+                                                          "$")
+    
+    # Loop through each inventory and apply the pattern to the inventory name
+    for ds in db_var:
+        
+        # Identify if one of the patterns specified appears in the SimaPro name
+        # If yes, then we save the location of the character where the pattern starts
+        ds_found: list[int] = [re.search(n.lower(), ds["SimaPro_name"].lower()).start() for n in cut_patterns if n.lower() in ds["SimaPro_name"].lower()]
+        
+        # If we found the pattern, we now remove it
+        if ds_found != []:
+            
+            # We split the SimaPro name at the lowest character location
+            ds_ending: int = min(ds_found)
+            
+            # Use slicing to modify name
+            # ds["new_name"] = ds["old_name"][:ending]
+            ds["SimaPro_name"] = ds["SimaPro_name"][:ds_ending]
+        
+        # Match pattern
+        ds_detoxified_name: (dict | None) = re.match(pattern_to_detoxify_ecoinvent_name_used_in_SimaPro , ds["SimaPro_name"])
+        
+        # Add key/value pairs to activity
+        ds["reference_product_name"]: (str | None) = ds_detoxified_name.groupdict()["reference_product"].strip() if ds_detoxified_name is not None else None
+        ds["activity_name"]: (str | None) = ds_detoxified_name.groupdict()["activity"].strip() if ds_detoxified_name is not None else None
+        
+        # We assume that when the regex pattern matches with the SimaPro name, that the inventory is from the ecoinvent database
+        ds["is_ecoinvent"] = ds_detoxified_name is not None
+        
+        # Loop through each inventory and apply the pattern to the inventory name
+        for exc in ds["exchanges"]:
+            
+            # For biosphere exchanges, we don't need to do it and can go on
+            if exc["type"] == "biosphere":
+                continue
+            
+            # Identify if one of the patterns specified appears in the SimaPro name
+            # If yes, then we save the location of the character where the pattern starts
+            exc_found: list[int] = [re.search(n.lower(), exc["SimaPro_name"].lower()).start() for n in cut_patterns if n.lower() in exc["SimaPro_name"].lower()]
+            
+            # If we found the pattern, we now remove it
+            if exc_found != []:
+                
+                # We split the SimaPro name at the lowest character location
+                exc_ending: int = min(exc_found)
+                
+                # Use slicing to modify name
+                # ds["new_name"] = ds["old_name"][:ending]
+                exc["SimaPro_name"] = exc["SimaPro_name"][:exc_ending]
+            
+            # Match pattern
+            exc_detoxified_name: (dict | None) = re.match(pattern_to_detoxify_ecoinvent_name_used_in_SimaPro , exc["SimaPro_name"])
+            
+            # Add key/value pairs to activity
+            exc["reference_product_name"]: (str | None) = exc_detoxified_name.groupdict()["reference_product"].strip() if exc_detoxified_name is not None else None
+            exc["activity_name"]: (str | None) = exc_detoxified_name.groupdict()["activity"].strip() if exc_detoxified_name is not None else None
+            
+            # We assume that when the regex pattern matches with the SimaPro name, that the inventory is from the ecoinvent database
+            exc["is_ecoinvent"] = exc_detoxified_name is not None
+            
+    
+    return db_var
 
 
 #%% Function to link biosphere flows between two biospheres
@@ -87,7 +212,7 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
                     SBERT_mapping_2_validated[TO_lowered]: list[dict] = []
                 
                 # Add to TO_lowered
-                SBERT_mapping_2_validated[TO_lowered] += [{"mapped": FROM_lowered, "multiplier": multiplier}]
+                SBERT_mapping_2_validated[TO_lowered] += [{"mapped": FROM_lowered, "multiplier": 1 / multiplier}]
     else:
         SBERT_mapping_2_validated: dict = {} # !!! correct?
     
@@ -246,27 +371,34 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
     # Add an ID of each flow
     result["ID"] = [tuple([tuple(map(lambda x: x.lower().strip(), flow.get("FROM_" + m))) if isinstance(flow.get("FROM_" + m), tuple) else flow.get("FROM_" + m, "").lower().strip() for m in ID_fields]) for flow in mapping]
     
-    # Construct two new dataframes
-    # ... filter the results and show only the successfully mapped items
-    successful: pd.DataFrame = result[result["quality"].isna() == False]
-
     # Exclude some data quality fields where mapping is inappropriate
     exclude_data_quality: list[int] = [9, 10, 11, 12, 21, 22, 23, 24]
-
+    
+    # Construct two new dataframes
+    # ... filter the results and show only the successfully mapped items, excluding the ones where we need to revise (exclude data quality)
+    successful: pd.DataFrame = result[(result["quality"].isna() == False) & ~(result["quality"].isin(exclude_data_quality))]
+    
+    # ... filter the results and only show what we excluded (but was actually mapped with SBERT)
+    excluded: pd.DataFrame = result[(result["quality"].isna() == False) & (result["quality"].isin(exclude_data_quality))]
+    
     # ... filter the results and show only the unsucessfully mapped items
-    missing: pd.DataFrame = result[(result["quality"].isna() == True) | (result["quality"].isin(exclude_data_quality))]
+    missing: pd.DataFrame = result[(result["quality"].isna() == True)]
 
     # We need to check the SBERT mapping manually
     # We therefore write the list of all SBERT mappings that we used, exluding the ones where cosine similarity was 1
-    SBERT_used: pd.DataFrame = successful.query("quality in @exclude_data_quality")
-    SBERT_used_unique: list = list(set(list(SBERT_used.FROM_name)))
+    # SBERT_used: pd.DataFrame = successful.query("quality in @exclude_data_quality")
+    SBERT_used_unique: list = list(set(list(excluded.FROM_name)))
     SBERT_to_check: pd.DataFrame = name_mapping_via_SBERT.query("orig in @SBERT_used_unique")
 
     # Create summary dataframe
     # Create detailed grouping of successfully matched flows using the quality criteria
     successful_summary_1: pd.DataFrame = successful.groupby(["quality", "quality_comment"]).agg({"quality": "count"}).rename(columns = {"quality": "n"}).reset_index().rename(columns = {"quality_comment": "description"}).assign(**{"type": "matched"})
     successful_summary_2: pd.DataFrame = pd.DataFrame({"description": "Total", "n": len(successful), "type": "matched"}, index = [1])
-
+    
+    # Excluded items
+    excluded_summary_1: pd.DataFrame = excluded.groupby(["quality", "quality_comment"]).agg({"quality": "count"}).rename(columns = {"quality": "n"}).reset_index().rename(columns = {"quality_comment": "description"}).assign(**{"type": "unmatched (currently excluded --> need to be revised first)"})
+    excluded_summary_2: pd.DataFrame = pd.DataFrame({"description": "Total", "n": len(excluded), "type": "unmatched (currently excluded --> need to be revised first)"}, index = [1])
+    
     # Create an empty row
     empty: pd.DataFrame = pd.DataFrame({"n": float("NaN")}, index = [1])
 
@@ -274,10 +406,10 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
     missing_summary: pd.DataFrame = pd.DataFrame({"description": "Total", "n": len(missing), "type": "unmatched"}, index = [1])
 
     # Create row for the total of flows (matched and unmatched)
-    total_summary: pd.DataFrame = pd.DataFrame({"n": len(successful) + len(missing), "description": "Total", "type": "matched + unmatched"}, index = [1])
+    total_summary: pd.DataFrame = pd.DataFrame({"n": len(successful) + len(excluded) + len(missing), "description": "Total", "type": "matched + unmatched (incl. excluded)"}, index = [1])
 
     # Concat the dataframes
-    summary: pd.DataFrame = pd.concat([successful_summary_1, empty, successful_summary_2, missing_summary, total_summary])
+    summary: pd.DataFrame = pd.concat([successful_summary_1, empty, excluded_summary_1, empty, excluded_summary_2, successful_summary_2, missing_summary, total_summary])
     
     # Documentation dataframe
     documentation: pd.DataFrame = pd.DataFrame([{"quality": k, "quality_comment": v} for k, v in mapping_info.items()])
@@ -285,7 +417,8 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
     # Write dataframes to Excel
     with pd.ExcelWriter(output_path / "biosphere_harmonization.xlsx", engine = "xlsxwriter") as writer:
         documentation.to_excel(writer, sheet_name = "documentation", index = False)
-        successful.to_excel(writer, sheet_name = "biosphere_matched", index = False)    
+        successful.to_excel(writer, sheet_name = "biosphere_matched", index = False)   
+        excluded.to_excel(writer, sheet_name = "biosphere_unmatched_excluded", index = False)   
         missing.to_excel(writer, sheet_name = "biosphere_unmatched", index = False)  
         SBERT_to_check.to_excel(writer, sheet_name = "SBERT_to_check", index = False)
         summary.to_excel(writer, sheet_name = "biosphere_summary", index = False)
@@ -310,7 +443,7 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
                       "data": []}
 
     # Write all items which have been successfully mapped to the data field in the migration dictionary
-    for m in result.fillna("").to_dict("records"):
+    for m in successful.fillna("").to_dict("records"):
         
         # Field one always specifies to which item the mapping should be applied.
         one: list[str] = [str(m["FROM_" + n]) for n in FROM_fields] + ["biosphere"]
@@ -353,94 +486,13 @@ def elementary_flows_that_are_not_used_in_XML_methods(elementary_flows: list,
     
     not_used: dict = {(m["database"], m["code"]): m for m in elementary_flows if methods.get((prep((m["name"],))[0], prep(m["categories"]))) is None}
     return not_used
-    
-
-# # We create a dataframe for all flows that are found that are not used in any of the LCIA methods from ecoinvent XML
-# def create_dataframe_of_elementary_flows_that_are_not_used_in_XML_methods(version: str,
-#                                                                           model_type: str,
-#                                                                           output_path: pathlib.Path,
-#                                                                           username: (str | None),
-#                                                                           password: (str | None),
-#                                                                           delete_temp_project: bool) -> (pd.DataFrame, dict):
-    
-#     # Check function input type
-#     check_function_input_type(create_dataframe_of_elementary_flows_that_are_not_used_in_methods, locals())
-    
-#     # We first read in all the data from ecoinvent XML
-#     # We write all the elementary flows and the LCIA methods to a Brightway project
-#     # Specify the folder where to store the Brightway project as well as the folder
-#     temp_brightway_folder: str = "_TEMP"
-#     temp_project: str = "TEMP_PROJECT"
-#     temp_folder_path: pathlib.Path = output_path / temp_brightway_folder
-    
-#     # If the current directory is not yet available, create it first
-#     temp_folder_path.mkdir(exist_ok = True)
-    
-#     # We change the Brightway project folder path to the one specified in the variables
-#     change_brightway_project_directory(output_path / temp_brightway_folder)
-    
-#     # We open the project
-#     bw2data.projects.set_current(temp_project)
-    
-#     # Let's first check, if the biosphere is already available.
-#     # If yes, we do not need to read it. Otherwise, we read the data directly from ecoinvent webpage by using the specific importer function
-#     if "biosphere" not in bw2data.databases:
-#         bw2io.ecoinvent.import_ecoinvent_release(version, model_type, username = username, password = password, lci = False, lcia = True, biosphere_name = "biosphere", use_mp = False)
-
-#     # We extract all biosphere flows from the background database
-#     all_biosphere_flows: list = bw2data.Database("biosphere")
-    
-#     # We extract all the LCIA methods from the background
-#     methods_dict: dict = {m: bw2data.Method(m).load() for m in bw2data.methods}
-    
-#     # We initialize two variables
-#     # The first one stores will store all biosphere flows which were not found in any of the methods
-#     flows_not_in_methods: dict = {}
-    
-#     # The second one will store the biosphere flow as a key, and the method name(s) where it was found as value
-#     methods_mapping: dict = {}
-    
-#     # We loop through each flow
-#     for flow in all_biosphere_flows:
-        
-#         # Initialize variables
-#         # As a default, we say that the flow is not found
-#         available: bool = False
-        
-#         # We initialize a list where we store all the LCIA method names where the flow is used
-#         methods_gathered: list = []
-        
-#         # We loop through all LCIA methods and check, whether the current flow is used in that method or not
-#         for method_name, loaded in methods_dict.items():
-            
-#             # Check if the flow code is present in the method
-#             if flow["code"] in [n[0][1] for n in loaded]:
-                
-#                 # If yes, we change the status to found (= True)
-#                 available: bool = True
-                
-#                 # We also add the method name to our list
-#                 methods_gathered += [", ".join(method_name)]
-                
-#         # If the flow was not found, we store it to our list
-#         if not available and flow["code"] not in flows_not_in_methods:
-#             flows_not_in_methods[flow["code"]]: dict = {k: (" | ".join(v) if isinstance(v, list | tuple) else v) for k, v in flow.as_dict().items()}
-        
-#         # We also append our methods mapping
-#         # We first extract the fields of the current flow which make the flow unique
-#         ID: tuple = tuple([tuple(map(lambda x: x.lower().strip(), flow.get(m))) if isinstance(flow.get(m), tuple) else flow.get(m, "").lower().strip() for m in ("name", "categories", "unit")])
-        
-#         # We append the ID and all the methods where it was found/not found
-#         methods_mapping[ID]: str = "- " + "\n- ".join(["'" + a + "'" for a in list(set(methods_gathered))])
-    
-#     # We write the flows to a dataframe
-#     df_flows_not_in_methods: pd.DataFrame = pd.DataFrame(list(flows_not_in_methods.values()))
-
-#     # If specified, we delete the project at the end
-#     if delete_temp_project:
-#         bw2data.projects.delete_project(temp_project, True)
-    
-#     return df_flows_not_in_methods, methods_mapping
 
 
 
+#%% Function to link biosphere flows between two biospheres
+
+def create_harmonized_activity_migration(activity_flows_1: list,
+                                         activity_flows_2: list,
+                                         output_path: pathlib.Path) -> dict:
+    
+    ...
