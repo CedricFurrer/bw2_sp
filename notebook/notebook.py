@@ -32,6 +32,8 @@ from harmonization import (# extract_ecoinvent_UUID_from_SimaPro_comment_field,
                            create_harmonized_biosphere_migration,
                            elementary_flows_that_are_not_used_in_XML_methods)
 
+from correspondence.correspondence import (create_correspondence_mapping)
+
 from utils import (change_brightway_project_directory)
 from calculation import (run_LCA)
 # from calculation import (LCA_Calculation)
@@ -52,6 +54,9 @@ project_path: pathlib.Path = here / "notebook_data"
 project_path.mkdir(exist_ok = True)
 project_name: str = "notebook"
 
+# Correspondence files
+folderpath_correspondence_files: pathlib.Path = here.parent / "correspondence" / "data"
+
 #%% Change brightway project directory and setup project
 change_brightway_project_directory(project_path)
 bw2data.projects.set_current(project_name)
@@ -66,6 +71,9 @@ filename_biosphere_migration_data: str = "biosphere_migration.json"
 filepath_biosphere_migration_data: pathlib.Path = output_path / filename_biosphere_migration_data
 filename_activity_migration_data: str = "activity_migration.json" # !!! TODO
 filepath_activity_migration_data: pathlib.Path = output_path / filename_activity_migration_data # !!! TODO
+
+# Logs
+filename_biosphere_flows_not_specified_in_XML_methods: str = "biosphere_flows_not_specified_in_LCIA_methods_from_XML.xlsx"
 
 # Other
 filename_SBERT_names_validated: str = "manually_checked_SBERT_names.xlsx"
@@ -226,7 +234,7 @@ agribalyse_db_simapro.write_database()
 
 #%% Import ecoinvent LCI database (XML)
 # Import ecoinvent database from XML LCI data
-ecoinvent_db_xml: bw2io.importers.ecospold2.SingleOutputEcospold2Importer = import_XML_LCI_inventories(XML_LCI_filepath = LCI_ecoinvent_xml_folderpath / "ecoinvent 3.10_cutoff_ecoSpold02" / "datasets", # !!! change to 'datasets' again
+ecoinvent_db_xml: bw2io.importers.ecospold2.SingleOutputEcospold2Importer = import_XML_LCI_inventories(XML_LCI_filepath = LCI_ecoinvent_xml_folderpath / "ecoinvent 3.10_cutoff_ecoSpold02" / "datasets",
                                                                                                        db_name = ecoinvent_db_name_xml,
                                                                                                        biosphere_db_name = biosphere_db_name,
                                                                                                        db_model_type_name = "cutoff",
@@ -247,6 +255,9 @@ df_LCIA_methods_ecoinvent: pd.DataFrame = pd.read_excel(LCIA_XML_folderpath / LC
 
 # Create a list with biosphere flows that are not used in any of the ecoinvent methods
 not_used_flows: dict = elementary_flows_that_are_not_used_in_XML_methods(elementary_flows = biosphere_flows_from_XML_LCI_data, method_df = df_LCIA_methods_ecoinvent)
+
+# Write dataframe of flows that are not used
+pd.DataFrame(list(not_used_flows.values())).to_excel(output_path / filename_biosphere_flows_not_specified_in_XML_methods, index = None)
 
 # Exclude the flows that are not used, those do not need to be migrated
 biosphere_flows_from_XML_used: list[dict] = [m for m in biosphere_flows_from_XML_LCI_data if (m["database"], m["code"]) not in not_used_flows]
@@ -297,24 +308,50 @@ def remove_unused_biosphere_flows(db):
 # Apply strategy and remove unused flows
 ecoinvent_db_xml.apply_strategy(remove_unused_biosphere_flows)
 
-#%% Replace the XML code with the one 
-def replace_XML_code_field_with_SimaPro_code(XML_db, to_db_codes = ecoinvent_db_simapro):
-    mapping: dict = {m["activity_code"] + "_" + m["reference_product_code"]: m["code"] for m in to_db_codes}
+            
+#%% Replace the XML code with the one from SimaPro
+def replace_XML_code_field_with_SimaPro_code(XML_db):
     
+    # Create a mapping file from activity and reference product codes that are found in the ecoinvent SimaPro database
+    mapping: dict = {m["activity_code"] + "_" + m["reference_product_code"]: m["code"] for m in ecoinvent_db_simapro if m["activity_code"] is not None and m["reference_product_code"] is not None}
+    
+    # Initialize counter
+    counter: int = 0
+    
+    # Loop through each inventory from the XML database
     for ds in XML_db:
+        
+        # Try to find the corresponding SimaPro code using the mapping created beforehand
         new_code: (str | None) = mapping.get(ds["code"])
         
+        # Go to next if no new code was found
         if new_code is None:
             continue
         
+        # Update the code field
         ds["code"]: str = new_code
         
+        # Increase counter
+        counter += 1
+        
+        # Loop through the exchanges to update the production exchange as well
         for exc in ds["exchanges"]:
+            
+            # If the current exchange is not of type production, continue
             if exc["type"] != "production":
                 continue
             
+            # Update code and input fields
             exc["code"]: str = new_code
-            exc["input"]: tuple = (exc["database"], new_code)
+            exc["input"]: tuple = (ds["database"], new_code)
+    
+    # Print how many codes were changed
+    print("{} from {} code(s) were updated with the respective SimaPro code".format(counter, len(XML_db)))
+    
+    return XML_db
+
+# Apply strategy and update the code of XML inventories with the respecting code from SimaPro inventories
+ecoinvent_db_xml.apply_strategy(replace_XML_code_field_with_SimaPro_code)
 
 #%% Migrate biosphere flows and register ecoinvent XML database
 
@@ -324,10 +361,20 @@ ecoinvent_db_xml.apply_strategy(partial(migrate_from_json_file,
                                 verbose = True)
 
 ecoinvent_db_xml.apply_strategy(partial(link.remove_linking,
-                                        production_exchanges = False,
-                                        substitution_exchanges = False,
-                                        technosphere_exchanges = False,
+                                        production_exchanges = True,
+                                        substitution_exchanges = True,
+                                        technosphere_exchanges = True,
                                         biosphere_exchanges = True), verbose = True)
+
+ecoinvent_db_xml.apply_strategy(partial(link.link_activities_internally,
+                                        production_exchanges = True,
+                                        substitution_exchanges = True,
+                                        technosphere_exchanges = True,
+                                        relink = False,
+                                        strip = True,
+                                        case_insensitive = True,
+                                        remove_special_characters = False,
+                                        verbose = True), verbose = True)
 
 # Apply external linking of biosphere flows
 ecoinvent_db_xml.apply_strategy(partial(link.link_biosphere_flows_externally,
@@ -369,22 +416,45 @@ print()
 
 
 
-#%% Next steps
-# Correspondence files
-# Update AGB ECO background
+#%% Creat correspondence mapping
+correspondence_mapping: list[dict] = create_correspondence_mapping(path_to_correspondence_files = folderpath_correspondence_files,
+                                                                   model_type = "cutoff",
+                                                                   map_to_version = (3, 10),
+                                                                   output_path = output_path)
+
+#%% Update the ecoinvent background activities in Agribalyse to the latest version
+# !!! TODO
 
 
 #%% Run LCA calculation
 
+# Methods to use for the LCA calculation
 methods: list[tuple[str]] = [("AWARE", "Water use"),
                              ("IPCC 2021", "GWP100 - fossil"),
-                             ("USEtox v2(recommended + interim)", "Freshwater ecotoxicity"),
+                             ("USEtox v2 (recommended + interim)", "Freshwater ecotoxicity"),
                              ("ReCiPe 2016 Midpoint (H)", "Freshwater eutrophication"),
                              ("SALCA v2.01", "Land occupation - Total"),
                              ("SALCA v2.01", "Land transformation - Deforestation")]
 
+# Check if all specified methods are registered in the Brightway background
+for method in methods:
+    error: bool = False
+    if method not in bw2data.methods:
+        error: bool = True
+        print("Method not registered: '{}'".format(method))
+
+# If unregistered methods have been detected, raise error
+if error:
+    raise ValueError("Unregistered methods detected.")
+
+# Extract all inventories
+# ... from ecoinvent (SimaPro)
 ecoinvent_simapro_inventories: list = [m for m in bw2data.Database(ecoinvent_db_name_simapro)]
 
+# ... from ecoinvent (XML)
+ecoinvent_xml_inventories: list = [m for m in bw2data.Database(ecoinvent_db_name_xml)]
+
+# Run LCA calculation
 LCA_results_ecoinvent_simapro: dict[str, pd.DataFrame] = run_LCA(activities = ecoinvent_simapro_inventories,
                                                                  methods = methods,
                                                                  write_LCI_exchanges = False,
@@ -397,9 +467,27 @@ LCA_results_ecoinvent_simapro: dict[str, pd.DataFrame] = run_LCA(activities = ec
                                                                  cutoff_emission = 0.001,
                                                                  write_results_to_file = True,
                                                                  local_output_path = output_path,
-                                                                 filename_without_ending = None,
+                                                                 filename_without_ending = "ecoinvent_SimaPro",
                                                                  use_timestamp_in_filename = True,
                                                                  print_progress_bar = True)
+
+# Run LCA calculation
+LCA_results_ecoinvent_simapro: dict[str, pd.DataFrame] = run_LCA(activities = ecoinvent_xml_inventories,
+                                                                 methods = methods,
+                                                                 write_LCI_exchanges = False,
+                                                                 write_LCI_exchanges_as_emissions = False,
+                                                                 write_LCIA_impacts_of_activity_exchanges = False,
+                                                                 write_LCIA_process_contribution = False,
+                                                                 write_LCIA_emission_contribution = False,
+                                                                 write_characterization_factors = False,
+                                                                 cutoff_process = 0.001,
+                                                                 cutoff_emission = 0.001,
+                                                                 write_results_to_file = True,
+                                                                 local_output_path = output_path,
+                                                                 filename_without_ending = "ecoinvent_XML",
+                                                                 use_timestamp_in_filename = True,
+                                                                 print_progress_bar = True)
+
 
 # mets: list[tuple] = [m for m in bw2data.methods][1:5]
 # invs: list[bw2data.backends.proxies.Activity] = [m for m in bw2data.Database(ecoinvent_db_name_simapro)][1:5]
