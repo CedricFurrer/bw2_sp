@@ -20,131 +20,6 @@ def prep(fields: tuple):
 def update_keys(dct: dict, string: str):
     return {string + k: v for k, v in dct.items()}
 
-
-# A function to extract the ecoinvent activity and product UUID's from the comment fields of SimaPro inventories
-def extract_ecoinvent_UUID_from_SimaPro_comment_field(db_var):
-    
-    # Loop through each inventory
-    for ds in db_var:
-        
-        # Extract the comment field of the current inventory
-        comment_field: (str | None) = ds.get("simapro metadata", {}).get("Comment")
-        
-        # If there is no comment field available, we add None's for activity code and reference product code and go to the next inventory because we can not do anyting
-        if comment_field is None:
-            ds["activity_code"]: None = None
-            ds["reference_product_code"]: None = None
-            continue
-        
-        # We construct a specific pattern that matches the logic of how activity and product UUID is stored in the comment field of a SimaPro ecoinvent inventory
-        pattern: str = ("^(.*)"
-                        "(ource\:)"
-                        "( )?"
-                        "(.*\_)?"
-                        "(?P<activity_code>[A-Za-z0-9\-]{36})"
-                        "(\_)"
-                        "(?P<reference_product_code>[A-Za-z0-9\-]{36})"
-                        "(\.spold)"
-                        "(.*)?$")
-        
-        # Apply the pattern using regex
-        extracted = re.match(pattern, comment_field)
-        
-        # If the pattern does not match, we go to the next item
-        if extracted is None:
-            ds["activity_code"]: None = None
-            ds["reference_product_code"]: None = None
-            continue
-        
-        # Otherwise, we add the found data
-        ds["activity_code"]: str = extracted["activity_code"]
-        ds["reference_product_code"]: str = extracted["reference_product_code"]
-            
-    return db_var
-
-
-# Break SimaPro names of ecoinvent inventories into the respective fragments of informations
-def identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories(db_var,
-                                                                cut_patterns: tuple = (" - copied", " - copies")):
-    
-    # Regex pattern to detoxify the SimaPro names
-    # ecoinvent specific!
-    pattern_to_detoxify_ecoinvent_name_used_in_SimaPro = ("^"
-                                                          "(?P<reference_product>.*)"
-                                                          "\{"
-                                                          "(?P<location>.*)"
-                                                          "\}"
-                                                          "\|"
-                                                          "(?P<activity>.*)"
-                                                          "\|"
-                                                          "( )?"
-                                                          "(?P<system_model>[A-Za-z\-]+)"
-                                                          "(\, | |\,)??"
-                                                          "(?P<process_type>(u|U|s|S))??"
-                                                          "$")
-    
-    # Loop through each inventory and apply the pattern to the inventory name
-    for ds in db_var:
-        
-        # Identify if one of the patterns specified appears in the SimaPro name
-        # If yes, then we save the location of the character where the pattern starts
-        ds_found: list[int] = [re.search(n.lower(), ds["SimaPro_name"].lower()).start() for n in cut_patterns if n.lower() in ds["SimaPro_name"].lower()]
-        
-        # If we found the pattern, we now remove it
-        if ds_found != []:
-            
-            # We split the SimaPro name at the lowest character location
-            ds_ending: int = min(ds_found)
-            
-            # Use slicing to modify name
-            # ds["new_name"] = ds["old_name"][:ending]
-            ds["SimaPro_name"] = ds["SimaPro_name"][:ds_ending]
-        
-        # Match pattern
-        ds_detoxified_name: (dict | None) = re.match(pattern_to_detoxify_ecoinvent_name_used_in_SimaPro , ds["SimaPro_name"])
-        
-        # Add key/value pairs to activity
-        ds["reference_product_name"]: (str | None) = ds_detoxified_name.groupdict()["reference_product"].strip() if ds_detoxified_name is not None else None
-        ds["activity_name"]: (str | None) = ds_detoxified_name.groupdict()["activity"].strip() if ds_detoxified_name is not None else None
-        
-        # We assume that when the regex pattern matches with the SimaPro name, that the inventory is from the ecoinvent database
-        ds["is_ecoinvent"] = ds_detoxified_name is not None
-        
-        # Loop through each inventory and apply the pattern to the inventory name
-        for exc in ds["exchanges"]:
-            
-            # For biosphere exchanges, we don't need to do it and can go on
-            if exc["type"] == "biosphere":
-                continue
-            
-            # Identify if one of the patterns specified appears in the SimaPro name
-            # If yes, then we save the location of the character where the pattern starts
-            exc_found: list[int] = [re.search(n.lower(), exc["SimaPro_name"].lower()).start() for n in cut_patterns if n.lower() in exc["SimaPro_name"].lower()]
-            
-            # If we found the pattern, we now remove it
-            if exc_found != []:
-                
-                # We split the SimaPro name at the lowest character location
-                exc_ending: int = min(exc_found)
-                
-                # Use slicing to modify name
-                # ds["new_name"] = ds["old_name"][:ending]
-                exc["SimaPro_name"] = exc["SimaPro_name"][:exc_ending]
-            
-            # Match pattern
-            exc_detoxified_name: (dict | None) = re.match(pattern_to_detoxify_ecoinvent_name_used_in_SimaPro , exc["SimaPro_name"])
-            
-            # Add key/value pairs to activity
-            exc["reference_product_name"]: (str | None) = exc_detoxified_name.groupdict()["reference_product"].strip() if exc_detoxified_name is not None else None
-            exc["activity_name"]: (str | None) = exc_detoxified_name.groupdict()["activity"].strip() if exc_detoxified_name is not None else None
-            
-            # We assume that when the regex pattern matches with the SimaPro name, that the inventory is from the ecoinvent database
-            exc["is_ecoinvent"] = exc_detoxified_name is not None
-            
-    
-    return db_var
-
-
 #%% Function to link biosphere flows between two biospheres
 
 def create_harmonized_biosphere_migration(biosphere_flows_1: list,
@@ -217,9 +92,9 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
         SBERT_mapping_2_validated: dict = {} # !!! correct?
     
     # Extract all unique names with the respective CAS number from both lists of biosphere flows
-    unique_names_CAS_1: set = set([(m["name"], m["CAS number"]) for m in biosphere_flows_1 if m["CAS number"] is not None])
-    unique_names_CAS_2: set = set([(m["name"], m["CAS number"]) for m in biosphere_flows_2 if m["CAS number"] is not None])
-
+    unique_names_CAS_1: set = set([(m["name"], m["CAS number"]) for m in biosphere_flows_1 if m["CAS number"] is not None and m["CAS number"] != ""])
+    unique_names_CAS_2: set = set([(m["name"], m["CAS number"]) for m in biosphere_flows_2 if m["CAS number"] is not None and m["CAS number"] != ""])
+    
     # Construct a mapping dictionary for flows from biosphere 2 where key is the CAS number and value is the name of the flow
     CAS_to_name_mapping: dict = {n: m for m, n in unique_names_CAS_2}
 
@@ -230,7 +105,7 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
 
     # Construct a mapping of biosphere 1 to biosphere 2 flow names via the CAS nr.
     CAS_mapping: dict = {prep((n["orig"],))[0]: n["mapped"] for n in name_mapping_via_CAS if n["score"] == 1}
-
+    
     # Construct a custom unit mapping
     unit_mapping: dict = {"cubic meter": ("kilogram", 0.001),
                           "square meter": ("square meter-year", 365),

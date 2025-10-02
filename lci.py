@@ -1130,9 +1130,7 @@ def modify_fields_to_SimaPro_standard(db_var,
                     else:
                         # If there is no top category provided and we can not map it, raise error
                         raise ValueError("No top category provided for biosphere flow:\n - 'SimaPro_name' = {}\n - 'unit' = {}\n - 'code' = {}".format(exc["SimaPro_name"], exc["unit"], exc["code"]))
-                        
-                        # # If we were not successful, we use the original categories as SimaPro categories
-                        # exc["SimaPro_categories"] = categories
+
                     
                 # Add an empty field for the CAS number, if the field is not yet existing
                 if "CAS number" not in exc:
@@ -1195,6 +1193,132 @@ def modify_fields_to_SimaPro_standard(db_var,
                 # Try to delete. If field is not found, pass
                 try: del exc[del_field]
                 except: pass
+    
+    return db_var
+
+
+
+
+# A function to extract the ecoinvent activity and product UUID's from the comment fields of SimaPro inventories
+def extract_ecoinvent_UUID_from_SimaPro_comment_field(db_var):
+    
+    # Loop through each inventory
+    for ds in db_var:
+        
+        # Extract the comment field of the current inventory
+        comment_field: (str | None) = ds.get("simapro metadata", {}).get("Comment")
+        
+        # If there is no comment field available, we add None's for activity code and reference product code and go to the next inventory because we can not do anyting
+        if comment_field is None:
+            ds["activity_code"]: None = None
+            ds["reference_product_code"]: None = None
+            continue
+        
+        # We construct a specific pattern that matches the logic of how activity and product UUID is stored in the comment field of a SimaPro ecoinvent inventory
+        pattern: str = ("^(.*)"
+                        "(ource\:)"
+                        "( )?"
+                        "(.*\_)?"
+                        "(?P<activity_code>[A-Za-z0-9\-]{36})"
+                        "(\_)"
+                        "(?P<reference_product_code>[A-Za-z0-9\-]{36})"
+                        "(\.spold)"
+                        "(.*)?$")
+        
+        # Apply the pattern using regex
+        extracted = re.match(pattern, comment_field)
+        
+        # If the pattern does not match, we go to the next item
+        if extracted is None:
+            ds["activity_code"]: None = None
+            ds["reference_product_code"]: None = None
+            continue
+        
+        # Otherwise, we add the found data
+        ds["activity_code"]: str = extracted["activity_code"]
+        ds["reference_product_code"]: str = extracted["reference_product_code"]
+            
+    return db_var
+
+
+# Break SimaPro names of ecoinvent inventories into the respective fragments of informations
+def identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories(db_var,
+                                                                cut_patterns: tuple = (" - copied", " - copies")):
+    
+    # Regex pattern to detoxify the SimaPro names
+    # ecoinvent specific!
+    pattern_to_detoxify_ecoinvent_name_used_in_SimaPro = ("^"
+                                                          "(?P<reference_product>.*)"
+                                                          "\{"
+                                                          "(?P<location>.*)"
+                                                          "\}"
+                                                          "\|"
+                                                          "(?P<activity>.*)"
+                                                          "\|"
+                                                          "( )?"
+                                                          "(?P<system_model>[A-Za-z\-]+)"
+                                                          "(\, | |\,)??"
+                                                          "(?P<process_type>(u|U|s|S))??"
+                                                          "$")
+    
+    # Loop through each inventory and apply the pattern to the inventory name
+    for ds in db_var:
+        
+        # Identify if one of the patterns specified appears in the SimaPro name
+        # If yes, then we save the location of the character where the pattern starts
+        ds_found: list[int] = [re.search(n.lower(), ds["SimaPro_name"].lower()).start() for n in cut_patterns if n.lower() in ds["SimaPro_name"].lower()]
+        
+        # If we found the pattern, we now remove it
+        if ds_found != []:
+            
+            # We split the SimaPro name at the lowest character location
+            ds_ending: int = min(ds_found)
+            
+            # Use slicing to modify name
+            # ds["new_name"] = ds["old_name"][:ending]
+            ds["SimaPro_name"] = ds["SimaPro_name"][:ds_ending]
+        
+        # Match pattern
+        ds_detoxified_name: (dict | None) = re.match(pattern_to_detoxify_ecoinvent_name_used_in_SimaPro , ds["SimaPro_name"])
+        
+        # Add key/value pairs to activity
+        ds["reference_product_name"]: (str | None) = ds_detoxified_name.groupdict()["reference_product"].strip() if ds_detoxified_name is not None else None
+        ds["activity_name"]: (str | None) = ds_detoxified_name.groupdict()["activity"].strip() if ds_detoxified_name is not None else None
+        
+        # We assume that when the regex pattern matches with the SimaPro name, that the inventory is from the ecoinvent database
+        ds["is_ecoinvent"] = ds_detoxified_name is not None
+        
+        # Loop through each inventory and apply the pattern to the inventory name
+        for exc in ds["exchanges"]:
+            
+            # For biosphere exchanges, we don't need to do it and can go on
+            if exc["type"] == "biosphere":
+                continue
+            
+            # Identify if one of the patterns specified appears in the SimaPro name
+            # If yes, then we save the location of the character where the pattern starts
+            exc_found: list[int] = [re.search(n.lower(), exc["SimaPro_name"].lower()).start() for n in cut_patterns if n.lower() in exc["SimaPro_name"].lower()]
+            
+            # If we found the pattern, we now remove it
+            if exc_found != []:
+                
+                # We split the SimaPro name at the lowest character location
+                exc_ending: int = min(exc_found)
+                
+                # Use slicing to modify name
+                # ds["new_name"] = ds["old_name"][:ending]
+                exc["SimaPro_name"] = exc["SimaPro_name"][:exc_ending]
+            
+            # Match pattern
+            exc_detoxified_name: (dict | None) = re.match(pattern_to_detoxify_ecoinvent_name_used_in_SimaPro , exc["SimaPro_name"])
+            
+            # Add key/value pairs to activity
+            exc["reference_product_name"]: (str | None) = exc_detoxified_name.groupdict()["reference_product"].strip() if exc_detoxified_name is not None else None
+            exc["activity_name"]: (str | None) = exc_detoxified_name.groupdict()["activity"].strip() if exc_detoxified_name is not None else None
+            
+            # We assume that when the regex pattern matches with the SimaPro name, that the inventory is from the ecoinvent database
+            exc["is_ecoinvent"] = exc_detoxified_name is not None
+            
     
     return db_var
 
@@ -1327,6 +1451,9 @@ def import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths: list,
     # we can therefore remove them
     db: list[dict] = remove_exchanges_with_zero_amount(db)
     
+    db: list[dict] = extract_ecoinvent_UUID_from_SimaPro_comment_field(db)
+    db: list[dict] = identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories(db)
+    
     # Apply internal linking of activities
     db: list[dict] = link.link_activities_internally(db,
                                                      production_exchanges = True,
@@ -1458,6 +1585,7 @@ def import_XML_LCI_inventories(XML_LCI_filepath: pathlib.Path,
         
     # Apply custom strategies
     db.apply_strategy(assign_flow_field_as_code, verbose = verbose)
+    db.apply_strategy(normalize_and_add_CAS_number)
     db.apply_strategy(partial(assign_categories_from_XML_to_biosphere_flows,
                               biosphere_flows = xml_biosphere), verbose = verbose)
     db.apply_strategy(partial(add_top_and_subcategory_fields_for_biosphere_flows, remove_initial_category_field = False))

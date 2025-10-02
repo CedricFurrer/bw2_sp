@@ -27,8 +27,8 @@ from lci import (# unregionalize_biosphere,
                  create_XML_biosphere_from_LCI
                  )
 
-from harmonization import (extract_ecoinvent_UUID_from_SimaPro_comment_field,
-                           identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories,
+from harmonization import (# extract_ecoinvent_UUID_from_SimaPro_comment_field,
+                           # identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories,
                            create_harmonized_biosphere_migration,
                            elementary_flows_that_are_not_used_in_XML_methods)
 
@@ -116,8 +116,8 @@ ecoinvent_db_simapro: bw2io.importers.base_lci.LCIImporter = import_SimaPro_LCI_
                                                                                             delimiter = "\t",
                                                                                             verbose = True)
 # ecoinvent_db_simapro.apply_strategy(unregionalize_biosphere) # !!! remove?
-ecoinvent_db_simapro.apply_strategy(extract_ecoinvent_UUID_from_SimaPro_comment_field)
-ecoinvent_db_simapro.apply_strategy(identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories)
+# ecoinvent_db_simapro.apply_strategy(extract_ecoinvent_UUID_from_SimaPro_comment_field)
+# ecoinvent_db_simapro.apply_strategy(identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories)
 # df: pd.DataFrame = pd.DataFrame([{k: v for k, v in m.items() if k.lower() not in ["exchanges", "simapro metadata"]} for m in ecoinvent_db_simapro]) # !!! remove
 
 ecoinvent_db_simapro.apply_strategy(partial(link.link_biosphere_flows_externally,
@@ -173,8 +173,8 @@ agribalyse_db_simapro: bw2io.importers.base_lci.LCIImporter = import_SimaPro_LCI
                                                                                              delimiter = "\t",
                                                                                              verbose = True)
 # agribalyse_db_simapro.apply_strategy(unregionalize_biosphere) # !!! remove?
-agribalyse_db_simapro.apply_strategy(extract_ecoinvent_UUID_from_SimaPro_comment_field)
-agribalyse_db_simapro.apply_strategy(identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories)
+# agribalyse_db_simapro.apply_strategy(extract_ecoinvent_UUID_from_SimaPro_comment_field)
+# agribalyse_db_simapro.apply_strategy(identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories)
 
 agribalyse_db_simapro.apply_strategy(partial(link.link_biosphere_flows_externally,
                                              biosphere_db_name = biosphere_db_name,
