@@ -1,25 +1,22 @@
+import pathlib
+here: pathlib.Path = pathlib.Path(__file__).parent
 
-#%% Import baseline packages
-import os
+if __name__ == "__main__":
+    import os
+    os.chdir(here.parent)
+
 import re
 import pathlib
 import pandas as pd
 from bw2io.units import normalize_units as normalize_units_function
 
-os.chdir(pathlib.Path(__file__).parent.parent.parent.parent.parent / "py_Brightway2")
-from variables import (XML_MODEL_TYPE)
-
-#%% Set input and output paths
-here = pathlib.Path(__file__).parent
-local_input_path = here / "Input"
-local_output_path = here / "Output"
 
 #%% Create correspondence mapping from ecoinvent files
 
-def read_and_merge_correspondence_files(path_to_correspondence_files: pathlib.Path,
-                                        model_type: str,
-                                        map_to_version: tuple,
-                                        output_path: pathlib.Path):
+def create_correspondence_mapping(path_to_correspondence_files: pathlib.Path,
+                                  model_type: str,
+                                  map_to_version: tuple,
+                                  output_path: pathlib.Path) -> list[dict]:
 
     # Pattern to extract the version names from the excel correspondence files
     correspondence_file_pattern: str = ("^Correspondence\-File\-v"
@@ -281,41 +278,41 @@ def read_and_merge_correspondence_files(path_to_correspondence_files: pathlib.Pa
     
     # !!! TODO from here
     # Two sets of fields can be used to uniquely identify the activities of ecoinvent
-    UUID_relevant_fields = ["activity_UUID", "product_UUID"]
-    name_relevant_fields = ["activity", "reference_product", "location", "unit"]
+    UUID_relevant_fields: list = ["activity_UUID", "product_UUID"]
+    name_relevant_fields: list = ["activity", "reference_product", "location", "unit"]
     
     # Create temporary mapping file. Loop through all entries found beforehand
     for _, item in all_data.items():
         
         # Check if all FROM and TO fields are provided. Note: the product UUID can be empty sometimes because it was introduced into the correspondence files only later
         # That means, those UUID's with only the activity UUID are skipped
-        empty_FROM_fields_for_UUID = any([item["FROM_" + m] == "" or item["FROM_" + m] is None for m in UUID_relevant_fields])
-        empty_FROM_fields_for_name = any([item["FROM_" + m] == "" or item["FROM_" + m] is None for m in name_relevant_fields])
-        empty_TO_fields_for_UUID = any([item["TO_" + m] == "" or item["TO_" + m] is None for m in UUID_relevant_fields])
-        empty_TO_fields_for_name = any([item["TO_" + m] == "" or item["TO_" + m] is None for m in name_relevant_fields])
+        empty_FROM_fields_for_UUID: bool = any([item["FROM_" + m] == "" or item["FROM_" + m] is None for m in UUID_relevant_fields])
+        empty_FROM_fields_for_name: bool = any([item["FROM_" + m] == "" or item["FROM_" + m] is None for m in name_relevant_fields])
+        empty_TO_fields_for_UUID: bool = any([item["TO_" + m] == "" or item["TO_" + m] is None for m in UUID_relevant_fields])
+        empty_TO_fields_for_name: bool = any([item["TO_" + m] == "" or item["TO_" + m] is None for m in name_relevant_fields])
         
         # Extract the FROM version of the current item
-        FROM_version = item["FROM_version"]
+        FROM_version: tuple = item["FROM_version"]
         
         # Write the TO fields of the item to a separate variable. We use it afterwards for the mapping dictionary, to indicate to where the value is mapped to
-        TO_item = {k: v for k, v in item.items() if "TO_" in k or "multiplier" in k}
+        TO_item: dict = {k: v for k, v in item.items() if "TO_" in k or "multiplier" in k}
         
         # We initialize a dictionary with the version if not yet done    
         if FROM_version not in combined_mapping:
-            combined_mapping[FROM_version] = {}
+            combined_mapping[FROM_version]: dict = {}
         
         # Internal mapping file is only valid if all FROM and TO fields are provided.
         # First, we add the FROM UUIDs as keys
         if not empty_FROM_fields_for_UUID and not empty_TO_fields_for_UUID:
             
             # Extract the activity and product UUIDs and use it as unique key
-            key_UUID = tuple([item["FROM_" + m] for m in UUID_relevant_fields])
+            key_UUID: tuple = tuple([item["FROM_" + m] for m in UUID_relevant_fields])
             
             # Check if the key has already been registered.
             if key_UUID not in combined_mapping[FROM_version]:
                 
                 # If no, we initialize a new key/value pair
-                combined_mapping[FROM_version][key_UUID] = [TO_item]
+                combined_mapping[FROM_version][key_UUID]: list[dict] = [TO_item]
                 
             else:
                 # Otherwise, we add to the existing key/value pair
@@ -326,13 +323,13 @@ def read_and_merge_correspondence_files(path_to_correspondence_files: pathlib.Pa
         if not empty_FROM_fields_for_name and not empty_TO_fields_for_name:
             
             # Extract the fields
-            key_name = tuple([item["FROM_" + m].lower() if isinstance(item["FROM_" + m], str) else item["FROM_" + m] for m in name_relevant_fields])
+            key_name: tuple = tuple([item["FROM_" + m].lower() if isinstance(item["FROM_" + m], str) else item["FROM_" + m] for m in name_relevant_fields])
             
             # Again, check if the key has already been registered.
             if key_name not in combined_mapping[FROM_version]:
                 
                 # If no, we initialize a new key/value pair
-                combined_mapping[FROM_version][key_name] = [TO_item]
+                combined_mapping[FROM_version][key_name]: list[dict] = [TO_item]
                 
             else:
                 # Otherwise, we add to the existing key/value pair
@@ -341,19 +338,19 @@ def read_and_merge_correspondence_files(path_to_correspondence_files: pathlib.Pa
 
 
     # Initialize a list to store the items that are removed (= no mapping specified)
-    removed = []
+    removed: list = []
     
     # Initialize lists to store the mapped items
     # one list for all successfully mapped items (where we end up with version specified in 'map_to_version')
     # and one list for all unsuccessfully mapped items (where version does not match 'map_to_version')
-    successfully_mapped = []
-    unsuccessfully_mapped = []
+    successfully_mapped: list = []
+    unsuccessfully_mapped: list = []
     
     # Loop through all elements previously imported from all excel files
     for _, item in all_data.items():
         
         # Extract only the FROM fields of the current item
-        FROM = {k: v for k, v in item.items() if "FROM_" in k}
+        FROM: dict = {k: v for k, v in item.items() if "FROM_" in k}
     
         # If the FROM_activity_UUID is specified, but we cannot find a TO_activity_UUID, that means that the current item is not mapped and therefore not used anymore
         # Items are also removed if the multiplier is 0
@@ -368,37 +365,37 @@ def read_and_merge_correspondence_files(path_to_correspondence_files: pathlib.Pa
             continue
         
         # Based on the FROM_version of the current item, extract all the versions that come when climbing the ladder up
-        versions_to_loop_through = [m for m in version_list if m["FROM_version"] > item["FROM_version"] and m["TO_version"] <= map_to_version]
+        versions_to_loop_through: list[dict] = [m for m in version_list if m["FROM_version"] > item["FROM_version"] and m["TO_version"] <= map_to_version]
         
         # We use the current item as starting point. We only keep the 'TO' information and the multiplier
-        start = {k: v for k, v in item.items() if "TO_" in k or "multiplier" in k}
+        start: dict = {k: v for k, v in item.items() if "TO_" in k or "multiplier" in k}
         
         # We initialize the going list where we add all results that we find when checking and matching other datasets from other versions
         # In the beginning, we only add our starting point. This list however will be extended during the loop afterwards
-        going = [[start]]
+        going: list[list[dict]] = [[start]]
         
         # We loop through each version individually (order matters!), in order to extract all the mappings in the chain until we get to the end version 
         for idx, version in enumerate(versions_to_loop_through):
             
             # Extract a dictionary with all valid datasets of the current version that we want to map to        
-            mappable_items = combined_mapping.get(version["FROM_version"])
+            mappable_items: list[dict] = combined_mapping.get(version["FROM_version"])
             
             # For each element that we saved in the going list, we try to find a new match with the new version in the current loop
             # In order to go on, we extract the last elements from the going list by slicing
-            last_relevant_items = going[-1]
+            last_relevant_items: list[dict] = going[-1]
             
             # Initialize a list to store all newly matched datasets
-            found = []
+            found: list = []
             
             # Loop through each relevant list element to find the corresponding matching dataset with the version number in the current loop
             for n in last_relevant_items:
                 
                 # We try to find the new item using two options
                 # 1... using the UUID's first
-                found_I = mappable_items.get(tuple([n["TO_" + m] for m in UUID_relevant_fields]))
+                found_I: (dict | None) = mappable_items.get(tuple([n["TO_" + m] for m in UUID_relevant_fields]))
                 
                 # 2... using the unique fields (such as name, unit, etc.)
-                found_II = mappable_items.get(tuple([n["TO_" + m].lower() if isinstance(n["TO_" + m], str) else n["TO_" + m] for m in name_relevant_fields]))
+                found_II: (dict | None) = mappable_items.get(tuple([n["TO_" + m].lower() if isinstance(n["TO_" + m], str) else n["TO_" + m] for m in name_relevant_fields]))
                 
                 # If we have found a new match, add it to the list
                 if found_I is not None:
@@ -412,7 +409,7 @@ def read_and_merge_correspondence_files(path_to_correspondence_files: pathlib.Pa
                     found += [dict(m, **{"multiplier": (1 / m["multiplier"] if m["multiplier"] != 0 else 0) * n["multiplier"]}) for m in found_II]
             
             # Remove duplicates, if any
-            found_duplicates_removed = list({str(m): m for m in found}.values())
+            found_duplicates_removed: list[dict] = list({str(m): m for m in found}.values())
     
             # Append newly found matching items to the going list, so that they can be used as elements in the following loop
             if found_duplicates_removed != []:
@@ -420,11 +417,11 @@ def read_and_merge_correspondence_files(path_to_correspondence_files: pathlib.Pa
         
         # After having screened all versions, we should have ended up with the final result as last element of the going list
         # We therefore extract the last element
-        final_TOs_orig = going[-1]
+        final_TOs_orig: list[dict] = going[-1]
         
         # For each element in the last element of going, we now add the FROM element
-        final_TOs = [{**FROM,
-                      **{k1: v1 for k1, v1 in m.items() if "TO_" in k1 or "multiplier" in k1}} for m in final_TOs_orig]
+        final_TOs: list[dict] = [{**FROM,
+                                  **{k1: v1 for k1, v1 in m.items() if "TO_" in k1 or "multiplier" in k1}} for m in final_TOs_orig]
         
         # We append to the variables
         # Successfully: if the final 'TO_version' matches the version that we indicated that we want to end up with ('map_to_version')
@@ -432,11 +429,27 @@ def read_and_merge_correspondence_files(path_to_correspondence_files: pathlib.Pa
         
         # Otherwise, the match found is unsuccessful
         unsuccessfully_mapped += [m for m in final_TOs if m["TO_version"] != map_to_version]
-        
     
-    # Write all the dataframes
-    pd.DataFrame(removed).to_excel(local_output_path / "correspondence_file_removed.xlsx")
-    pd.DataFrame(successfully_mapped + unsuccessfully_mapped).to_excel(local_output_path / "correspondence_files_mapped.xlsx")
-    pd.DataFrame(successfully_mapped).to_excel(local_output_path / "correspondence_file_successfully_mapped.xlsx")
-    pd.DataFrame(unsuccessfully_mapped).to_excel(local_output_path / "correspondence_file_unsuccessfully_mapped.xlsx")
+    # Documentation dataframe
+    documentation_dict: dict = {"correspondence_mapping": "A list of all datasets from one to the other version.",
+                                "successful": "A list of all datasets that were successfully mapped from one correspondence file (version X) to the other correspondence file (version {})".format(".".join([str(m) for m in map_to_version])),
+                                "unsuccessful": "A list of all datasets that were unsuccessfully mapped from one correspondence file (version X) to the other correspondence file (version {}). This can happen if e.g. datasets are not longer maintained or they were simply not connected well, e.g. if dataset codes from previous version were not matching codes from the next version.".format(".".join([str(m) for m in map_to_version])),
+                                "removed": "A list of datasets that were removed from one correspondence file to the other correspondence file (no mapping specified). This happen if database maintainer was removing datasets from one to the other version.",}
+    documentation: pd.DataFrame = pd.DataFrame([{"Sheetname": "", "Description": v} for k, v in documentation_dict.items()])
+    
+    # Initialize a list to store the items that are removed (= no mapping specified)
+    
+    # Initialize lists to store the mapped items
+    # one list for all successfully mapped items (where we end up with version specified in 'map_to_version')
+    # and one list for all unsuccessfully mapped items (where version does not match 'map_to_version')
+    
+    # Write dataframes to Excel
+    with pd.ExcelWriter(output_path / "correspondence_files.xlsx", engine = "xlsxwriter") as writer:
+        documentation.to_excel(writer, sheet_name = "documentation", index = False)
+        pd.DataFrame(successfully_mapped + unsuccessfully_mapped).to_excel(writer, sheet_name = "correspondence_mapping", index = False)
+        pd.DataFrame(successfully_mapped).to_excel(writer, sheet_name = "successful", index = False)   
+        pd.DataFrame(unsuccessfully_mapped).to_excel(writer, sheet_name = "unsuccessful", index = False) 
+        pd.DataFrame(removed).to_excel(writer, sheet_name = "removed", index = False) 
+    
+    return successfully_mapped + unsuccessfully_mapped
 
