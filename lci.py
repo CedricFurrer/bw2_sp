@@ -957,7 +957,7 @@ def assign_flow_field_as_code(db_var):
 
 
 # Function to assign the biosphere categories from the XML files to the exchange data during ecospold import
-def assign_categories_from_XML_to_biosphere_flows(db_var, biosphere_flows): # !!!
+def assign_categories_from_XML_to_biosphere_flows(db_var, biosphere_flows):
     
     # Create a code-categories mapping for each biosphere flow
     categories_mapping = {m["code"]: m["categories"] for m in biosphere_flows}
@@ -1196,6 +1196,102 @@ def modify_fields_to_SimaPro_standard(db_var,
     
     return db_var
 
+
+
+# Waste flows are defined with a negative production amount in XML data
+# For SimaPro, waste flows are with a positive sign. We need to flip the signs for waste flows therefore, when importing XML data.
+def flip_sign_of_waste_flows(db_var):
+    
+    # Specify amount and uncertainty fields where signs will be adjusted 
+    exc_uncertainty_field_names: list[str] = ["amount", "loc", "scale", "shape", "minimum", "maximum"]
+    
+    # Extract all inventory codes where production amount is smaller than 0
+    # We assume, that those inventories are of type waste
+    # ... once with technosphere fields as key
+    unique_fields_with_production_amount_smaller_than_0 = {tuple([m[n] for n in ("name", "unit", "location")]): True for m in db_var if m["production amount"] < 0}
+    
+    # Initialize dictionaries to store all changed inventories and exchanges
+    changed_invs: list = []
+    changed_excs: list = []
+    
+    # Loop through each inventory
+    # Identify waste flows and flip signs
+    for ds in db_var:
+        
+        # Check if production amount of the inventory is negative
+        inv_amount_is_negative: bool = ds["production amount"] < 0
+        
+        # If the inventory is of type 
+        if inv_amount_is_negative:
+            
+            # Create a dictionary and store the old inventory production amount
+            changed_inv: dict = {"production_amount_old": ds["production amount"]}
+            
+            # Change the sign of the production amount
+            ds["production amount"] *= -1
+            
+            # Make an entry/dictionary for the Excel table afterwards to store all changes made to inventories
+            # Add certain fields that will be shown in the table
+            changed_inv |= {**{n: ds[n] for n in ("name", "unit", "location")}, **{"production_amount_new": ds["production amount"], "type": ds["type"]}}
+            
+            # Add changed inventory as dictionary to the list
+            changed_invs += [changed_inv]
+        
+        # Loop through all exchanges
+        for exc in ds["exchanges"]:
+            
+            # Waste flows are only of type technosphere. Substitution flows do not exist in ecoinvent
+            # If the current exchange is not of type technosphere or production, go on, because we don't need to adjust anything
+            if exc["type"] not in ["technosphere", "production"]:
+                continue
+            
+            # Check if the inventory was identified with a negative production exchange before and therefore is categorized as 'waste'
+            exc_is_waste: bool = unique_fields_with_production_amount_smaller_than_0.get(tuple([exc[n] for n in ("name", "unit", "location")]), False)
+            
+            # Check if the (production) amount of the inventory is negative
+            exc_amount_is_negative: bool = exc["amount"] < 0
+            
+            # If amount is negative and it is an exchange of type 'waste'
+            if exc_is_waste and exc_amount_is_negative:
+                
+                # Create a dictionary and store the old exchange (production) amount
+                changed_exc: dict = {"amount_old": exc["amount"]}
+                
+                # Adjust all integer/float fields (= amount and uncertainty fields) in the exchange dictionary
+                for exc_uncertainty_field_name in exc_uncertainty_field_names:
+                    
+                    # Check if the current field name is contained in the exchange
+                    if exc_uncertainty_field_name in exc:
+                        
+                        # If yes, adjust the value -> flip it
+                        exc[exc_uncertainty_field_name] *= -1
+                
+                # Update the negative field
+                if "negative" in exc:
+                    exc["negative"]: bool = exc["amount"] < 0
+                
+                # Make an entry/dictionary for the Excel table afterwards to store all changes made to exchanges
+                # Add certain fields that will be shown in the table
+                changed_exc |= {**{n: exc[n] for n in ("name", "unit", "location")}, **{"amount_new": exc["amount"], "type": exc["type"]}}
+                
+                # Add changed exchange as dictionary to the list
+                changed_excs += [changed_exc]
+        
+        
+    # # Create pandas Dataframes first
+    # df_changed_invs = pd.DataFrame(changed_invs)
+    # df_changed_excs = pd.DataFrame(changed_excs)
+    
+    # # Write Dataframes to Excel files, if the files are not empty
+    # if len(df_changed_invs) > 0:
+    #     df_changed_invs.to_excel(local_output_path / "XML_inventories_where_signs_flipped.xlsx")
+    #     print("\n'XML_inventories_where_signs_flipped.xlsx' saved to:\n" + str(local_output_path))
+        
+    # if len(df_changed_excs) > 0:
+    #     df_changed_excs.to_excel(local_output_path / "XML_exchanges_where_signs_flipped.xlsx")
+    #     print("\n'XML_exchanges_where_signs_flipped.xlsx' saved to:\n" + str(local_output_path))
+    
+    return db_var
 
 
 
@@ -1593,6 +1689,7 @@ def import_XML_LCI_inventories(XML_LCI_filepath: pathlib.Path,
                               model_type = db_model_type_name,
                               process_type = db_process_type_name), verbose = verbose)
     db.apply_strategy(add_GLO_to_biosphere_exchanges, verbose = verbose)
+    db.apply_strategy(flip_sign_of_waste_flows)
     
     return db
     
