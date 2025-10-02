@@ -323,4 +323,28 @@ def progressbar(iterable, prefix: str = "", size: int = 40, out = sys.stdout):
     # Flush console
     print("", flush = True, file = out)
 
+
+#%% Define function 'flatten'
+
+def flatten(orig_list: list):
     
+    """ Function to flatten a nested list or a nested tuple
+
+    Parameters
+    ----------
+    orig_list : list or tuple
+        DA nested list or a nested tuple which should be flattened
+
+    Returns
+    -------
+    x : list
+        Returns a flattened list
+
+    """
+    # Raise an error, if the input 'orig_list' is not of type list or type tuple
+    check_function_input_type(flatten, locals())
+    
+    # Make a flat list
+    x = [item for sublist in orig_list for item in sublist]
+    
+    return x 
