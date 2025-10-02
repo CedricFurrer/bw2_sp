@@ -18,12 +18,12 @@ from lcia import (import_SimaPro_LCIA_methods,
                   add_damage_normalization_weighting,
                   write_biosphere_flows_and_method_names_to_XLSX)
 
-from lci import (unregionalize,
+from lci import (# unregionalize_biosphere,
                  import_SimaPro_LCI_inventories,
                  import_XML_LCI_inventories,
                  migrate_from_excel_file,
                  migrate_from_json_file,
-                 create_XML_biosphere_from_elmentary_exchanges_file,
+                 # create_XML_biosphere_from_elmentary_exchanges_file,
                  create_XML_biosphere_from_LCI
                  )
 
@@ -115,7 +115,7 @@ ecoinvent_db_simapro: bw2io.importers.base_lci.LCIImporter = import_SimaPro_LCI_
                                                                                             encoding = "latin-1",
                                                                                             delimiter = "\t",
                                                                                             verbose = True)
-# ecoinvent_db_simapro.apply_strategy(unregionalize) # !!! remove?
+# ecoinvent_db_simapro.apply_strategy(unregionalize_biosphere) # !!! remove?
 ecoinvent_db_simapro.apply_strategy(extract_ecoinvent_UUID_from_SimaPro_comment_field)
 ecoinvent_db_simapro.apply_strategy(identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories)
 # df: pd.DataFrame = pd.DataFrame([{k: v for k, v in m.items() if k.lower() not in ["exchanges", "simapro metadata"]} for m in ecoinvent_db_simapro]) # !!! remove
@@ -172,7 +172,7 @@ agribalyse_db_simapro: bw2io.importers.base_lci.LCIImporter = import_SimaPro_LCI
                                                                                              encoding = "latin-1",
                                                                                              delimiter = "\t",
                                                                                              verbose = True)
-# agribalyse_db_simapro.apply_strategy(unregionalize) # !!! remove?
+# agribalyse_db_simapro.apply_strategy(unregionalize_biosphere) # !!! remove?
 agribalyse_db_simapro.apply_strategy(extract_ecoinvent_UUID_from_SimaPro_comment_field)
 agribalyse_db_simapro.apply_strategy(identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories)
 
@@ -238,9 +238,9 @@ ecoinvent_db_xml: bw2io.importers.ecospold2.SingleOutputEcospold2Importer = impo
 biosphere_flows_from_XML_LCI_data: list[dict] = create_XML_biosphere_from_LCI(db = ecoinvent_db_xml,
                                                                               biosphere_db_name = biosphere_db_name)
     
-# Create the biosphere from XML file containing all elementary exchanges
-biosphere_flows_from_XML_elementary_exchanges: list[dict] = create_XML_biosphere_from_elmentary_exchanges_file(filepath_ElementaryExchanges = LCI_ecoinvent_xml_folderpath / "ecoinvent 3.10_cutoff_ecoSpold02" / "MasterData" / "ElementaryExchanges.xml",
-                                                                                                               biosphere_db_name = biosphere_db_name)
+# # Create the biosphere from XML file containing all elementary exchanges
+# biosphere_flows_from_XML_elementary_exchanges: list[dict] = create_XML_biosphere_from_elmentary_exchanges_file(filepath_ElementaryExchanges = LCI_ecoinvent_xml_folderpath / "ecoinvent 3.10_cutoff_ecoSpold02" / "MasterData" / "ElementaryExchanges.xml",
+#                                                                                                                biosphere_db_name = biosphere_db_name)
 
 # Read excel file containing the LCIA methods from ecoinvent
 df_LCIA_methods_ecoinvent: pd.DataFrame = pd.read_excel(LCIA_XML_folderpath / LCIA_XML_filename, sheet_name = LCIA_XML_sheetname)
@@ -296,6 +296,25 @@ def remove_unused_biosphere_flows(db):
 
 # Apply strategy and remove unused flows
 ecoinvent_db_xml.apply_strategy(remove_unused_biosphere_flows)
+
+#%% Replace the XML code with the one 
+def replace_XML_code_field_with_SimaPro_code(XML_db, to_db_codes = ecoinvent_db_simapro):
+    mapping: dict = {m["activity_code"] + "_" + m["reference_product_code"]: m["code"] for m in to_db_codes}
+    
+    for ds in XML_db:
+        new_code: (str | None) = mapping.get(ds["code"])
+        
+        if new_code is None:
+            continue
+        
+        ds["code"]: str = new_code
+        
+        for exc in ds["exchanges"]:
+            if exc["type"] != "production":
+                continue
+            
+            exc["code"]: str = new_code
+            exc["input"]: tuple = (exc["database"], new_code)
 
 #%% Migrate biosphere flows and register ecoinvent XML database
 

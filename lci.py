@@ -631,7 +631,7 @@ def remove_duplicates(db_var,
     return new_db_var
 
 
-def unregionalize(db_var):
+def unregionalize_biosphere(db_var):
     
     # Loop through each inventory
     for ds in db_var:
@@ -1066,9 +1066,6 @@ def modify_fields_to_SimaPro_standard(db_var,
         
         # We loop through each exchange to transform data
         for exc in ds["exchanges"]:
-            
-            # # Remove 
-            # del exc["activity"], exc["flow"]
             
             # Modify the production exchange
             if exc["type"] == "production":
