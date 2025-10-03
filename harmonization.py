@@ -368,6 +368,115 @@ def elementary_flows_that_are_not_used_in_XML_methods(elementary_flows: list,
 
 def create_harmonized_activity_migration(activity_flows_1: list,
                                          activity_flows_2: list,
+                                         correspondence_mapping: (list | pd.DataFrame),
                                          output_path: pathlib.Path) -> dict:
     
-    ...
+    # Check function input type
+    check_function_input_type(create_harmonized_activity_migration, locals())
+    
+    # Convert dataframe to list of dictionaries
+    if isinstance(correspondence_mapping, pd.DataFrame):
+        correspondence_mapping: list[dict] = correspondence_mapping.to_dict("records")
+    
+    # Initialize a dictionary to store elements to which can be mapped to
+    activity_mapping: dict = {}
+    
+    # Loop through each of the activity that can be mapped to
+    for act in activity_flows_2:
+        
+        SimaPro_name: (str | None) = None if act.get("SimaPro_name") == "" else act.get("SimaPro_name")
+        name: (str | None) = None if act.get("name") == "" else act.get("name")
+        unit: (str | None) = None if act.get("unit") == "" else act.get("unit")
+        location: (str | None) = None if act.get("location") == "" else act.get("location")
+        activity_name: (str | None) = None if act.get("activity_name") == "" else act.get("activity_name")
+        activity_code: (str | None) = None if act.get("activity_code") == "" else act.get("activity_code")
+        reference_product_name: (str | None) = None if act.get("reference_product_name") == "" else act.get("reference_product_name")
+        reference_product_code: (str | None) = None if act.get("reference_product_code") == "" else act.get("reference_product_code")
+        
+        if SimaPro_name is not None:
+            activity_mapping[prep((SimaPro_name,))[0]]: dict = act  
+        
+        if name is not None and unit is not None and location is not None:
+            activity_mapping[prep((name, unit, location))]: dict = act   
+        
+        if activity_code is not None and reference_product_code is not None:
+            activity_mapping[(activity_code, reference_product_code)]: dict = act
+        
+        if activity_name is not None and reference_product_name is not None and unit is not None and location is not None:
+            activity_mapping[prep((activity_name, reference_product_name, unit, location))]: dict = act   
+        
+
+    # Loop through each item from the correspondence files
+    for m in correspondence_mapping:
+        
+        FROM_unit: str = m["FROM_unit"]
+        FROM_location: str = m["FROM_location"]
+        FROM_activity_name: str = m["FROM_activity"]
+        FROM_activity_code: str = m["FROM_activity_UUID"]
+        FROM_reference_product_name: str = m["FROM_reference_product"]
+        FROM_reference_product_code: str = m["FROM_product_UUID"]
+        
+        TO_1: (dict | None) = activity_mapping.get((FROM_activity_code, FROM_reference_product_code))
+        TO_2: (dict | None) = activity_mapping.get(prep((FROM_activity_name, FROM_reference_product_name, FROM_unit, FROM_location)))
+        TO: (dict | None) = TO_1 if TO_1 is not None else (TO_2 if TO_2 is not None else None)
+        
+        if TO is None:
+            continue
+        
+        if FROM_activity_code is not None and FROM_reference_product_code is not None:
+            activity_mapping[(FROM_activity_code, FROM_reference_product_code)]: dict = TO
+            
+        if FROM_activity_name is not None and FROM_reference_product_name is not None and FROM_unit is not None and FROM_location is not None:
+            activity_mapping[prep((FROM_activity_name, FROM_reference_product_name, FROM_unit, FROM_location))]: dict = TO
+    
+    
+    # Initialize a list to store migration data --> tuple of FROM and TO dicts
+    migration_data: list[tuple[dict, (dict | None)]] = []
+    
+    # Loop through each activity
+    # Check if it should be mapped
+    # Map if possible
+    for ds in activity_flows_1:
+        for exc in ds["exchanges"]:
+            
+            if exc["type"] in ["production", "biosphere"]:
+                continue
+            
+            if not exc.get("is_ecoinvent", True):
+                continue
+            
+            exc_SimaPro_name: (str | None) = None if exc.get("SimaPro_name") == "" else exc.get("SimaPro_name")
+            exc_name: (str | None) = None if exc.get("name") == "" else exc.get("name")
+            exc_unit: (str | None) = None if exc.get("unit") == "" else exc.get("unit")
+            exc_location: (str | None) = None if exc.get("location") == "" else exc.get("location")
+            exc_activity_name: (str | None) = None if exc.get("activity_name") == "" else exc.get("activity_name")
+            exc_activity_code: (str | None) = None if exc.get("activity_code") == "" else exc.get("activity_code")
+            exc_reference_product_name: (str | None) = None if exc.get("reference_product_name") == "" else exc.get("reference_product_name")
+            exc_reference_product_code: (str | None) = None if exc.get("reference_product_code") == "" else exc.get("reference_product_code")
+            found: None = None
+            
+            if found is not None and exc_SimaPro_name is not None:
+                found: (dict | None) = activity_mapping.get(prep((exc_SimaPro_name,))[0])
+            
+            if exc_name is not None and exc_unit is not None and exc_location is not None:
+                found: (dict | None) = activity_mapping.get(prep((exc_name, exc_unit, exc_location)))
+            
+            if found is None and exc_name is not None and exc_unit is not None and exc_location is not None:
+                exc_created_simapro_name: str = "{} {{{}}}|{}".format(exc_reference_product_name, exc_location, exc_activity_name) 
+                found: (list[dict] | list) = [v for k, v in activity_mapping.items() if isinstance(k, str) and k.startswith(prep((exc_created_simapro_name,))[0])]
+                found: (dict | None) = found[0] if len(found) > 0 else None
+            
+            if found is not None and exc_activity_code is not None and exc_reference_product_code is not None:
+                found: (dict | None) = activity_mapping.get((exc_activity_code, exc_reference_product_code)) 
+            
+            if found is not None and exc_activity_name is not None and exc_reference_product_name is not None and exc_unit is not None and exc_location is not None:
+                found: (dict | None) = activity_mapping.get(prep((exc_activity_name, exc_reference_product_name, exc_unit, exc_location))) 
+            
+            if found is not None:
+                migration_data += [(exc, found)]
+            else:
+                migration_data += [(exc, found)]
+            
+    return {(FROM["type"], FROM["code"]): TO for FROM, TO in migration_data}
+        
+
