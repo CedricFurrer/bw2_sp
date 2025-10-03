@@ -30,6 +30,7 @@ from lci import (# unregionalize_biosphere,
 from harmonization import (# extract_ecoinvent_UUID_from_SimaPro_comment_field,
                            # identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories,
                            create_harmonized_biosphere_migration,
+                           create_harmonized_activity_migration,
                            elementary_flows_that_are_not_used_in_XML_methods)
 
 from correspondence.correspondence import (create_correspondence_mapping)
@@ -424,6 +425,10 @@ correspondence_mapping: list[dict] = create_correspondence_mapping(path_to_corre
 
 #%% Update the ecoinvent background activities in Agribalyse to the latest version
 # !!! TODO
+activity_migration_data: dict = create_harmonized_activity_migration(activity_flows_1 = list(agribalyse_db_simapro),
+                                                                     activity_flows_2 = list(ecoinvent_db_simapro),
+                                                                     correspondence_mapping = correspondence_mapping,
+                                                                     output_path = output_path)
 
 
 #%% Run LCA calculation
@@ -488,7 +493,7 @@ LCA_results_ecoinvent_simapro: dict[str, pd.DataFrame] = run_LCA(activities = ec
                                                                  use_timestamp_in_filename = True,
                                                                  print_progress_bar = True)
 
-
+see = list(agribalyse_db_simapro)[1500:1550]
 # mets: list[tuple] = [m for m in bw2data.methods][1:5]
 # invs: list[bw2data.backends.proxies.Activity] = [m for m in bw2data.Database(ecoinvent_db_name_simapro)][1:5]
 
