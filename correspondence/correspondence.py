@@ -451,5 +451,5 @@ def create_correspondence_mapping(path_to_correspondence_files: pathlib.Path,
         pd.DataFrame(unsuccessfully_mapped).to_excel(writer, sheet_name = "unsuccessful", index = False) 
         pd.DataFrame(removed).to_excel(writer, sheet_name = "removed", index = False) 
     
-    return successfully_mapped + unsuccessfully_mapped
+    return successfully_mapped
 
