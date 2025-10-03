@@ -1298,6 +1298,9 @@ def flip_sign_of_waste_flows(db_var):
 # A function to extract the ecoinvent activity and product UUID's from the comment fields of SimaPro inventories
 def extract_ecoinvent_UUID_from_SimaPro_comment_field(db_var):
     
+    # Initialize mapping dictionary to store found activity and reference product codes to after that add to exchanges
+    mapping: dict = {}
+    
     # Loop through each inventory
     for ds in db_var:
         
@@ -1333,7 +1336,26 @@ def extract_ecoinvent_UUID_from_SimaPro_comment_field(db_var):
         # Otherwise, we add the found data
         ds["activity_code"]: str = extracted["activity_code"]
         ds["reference_product_code"]: str = extracted["reference_product_code"]
+        
+        # Add to the mapping dictionary
+        mapping[(ds["name"], ds["unit"], ds["location"])]: dict = {"activity_code": extracted["activity_code"],
+                                                                   "reference_product_code": extracted["reference_product_code"]}
+        
+    # Loop through each exchange
+    for ds in db_var:
+        for exc in ds["exchanges"]:
             
+            # Go on if the exchange is of type biosphere
+            if exc["type"] == "biosphere":
+                continue
+            
+            # Try to find the activity and reference product code dictionary
+            found: (dict | None) = mapping.get((exc["name"], exc["unit"], exc["location"]))
+            
+            # If found, add to exchange
+            if found is not None:
+                exc |= found
+        
     return db_var
 
 
@@ -1362,8 +1384,9 @@ def identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories(db_var,
         
         # Identify if one of the patterns specified appears in the SimaPro name
         # If yes, then we save the location of the character where the pattern starts
-        ds_found: list[int] = [re.search(n.lower(), ds["SimaPro_name"].lower()).start() for n in cut_patterns if n.lower() in ds["SimaPro_name"].lower()]
-        
+        # ds_found: list[int] = [re.search(n.lower(), ds["SimaPro_name"].lower()).start() for n in cut_patterns if n.lower() in ds["SimaPro_name"].lower()] # !!! correct? REMOVE
+        ds_found: list[int] = [re.search(n.lower(), ds["name"].lower()).start() for n in cut_patterns if n.lower() in ds["name"].lower()]
+
         # If we found the pattern, we now remove it
         if ds_found != []:
             
@@ -1372,7 +1395,8 @@ def identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories(db_var,
             
             # Use slicing to modify name
             # ds["new_name"] = ds["old_name"][:ending]
-            ds["SimaPro_name"] = ds["SimaPro_name"][:ds_ending]
+            ds["name"] = ds["name"][:ds_ending]
+            # ds["SimaPro_name"] = ds["SimaPro_name"][:ds_ending] # !!! REMOVE
         
         # Match pattern
         ds_detoxified_name: (dict | None) = re.match(pattern_to_detoxify_ecoinvent_name_used_in_SimaPro , ds["SimaPro_name"])
@@ -1393,7 +1417,8 @@ def identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories(db_var,
             
             # Identify if one of the patterns specified appears in the SimaPro name
             # If yes, then we save the location of the character where the pattern starts
-            exc_found: list[int] = [re.search(n.lower(), exc["SimaPro_name"].lower()).start() for n in cut_patterns if n.lower() in exc["SimaPro_name"].lower()]
+            # exc_found: list[int] = [re.search(n.lower(), exc["SimaPro_name"].lower()).start() for n in cut_patterns if n.lower() in exc["SimaPro_name"].lower()]  # !!! correct? REMOVE
+            exc_found: list[int] = [re.search(n.lower(), exc["name"].lower()).start() for n in cut_patterns if n.lower() in exc["name"].lower()]
             
             # If we found the pattern, we now remove it
             if exc_found != []:
@@ -1402,8 +1427,8 @@ def identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories(db_var,
                 exc_ending: int = min(exc_found)
                 
                 # Use slicing to modify name
-                # ds["new_name"] = ds["old_name"][:ending]
-                exc["SimaPro_name"] = exc["SimaPro_name"][:exc_ending]
+                exc["name"] = exc["name"][:exc_ending]
+                # exc["SimaPro_name"] = exc["SimaPro_name"][:exc_ending] # !!! REMOVE
             
             # Match pattern
             exc_detoxified_name: (dict | None) = re.match(pattern_to_detoxify_ecoinvent_name_used_in_SimaPro , exc["SimaPro_name"])
