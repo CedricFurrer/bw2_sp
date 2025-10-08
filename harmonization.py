@@ -1,5 +1,5 @@
-import re
-import copy
+# import re
+# import copy
 import pathlib
 import pandas as pd
 
@@ -24,286 +24,151 @@ def update_keys(dct: dict, string: str):
 
 def create_harmonized_biosphere_migration(biosphere_flows_1: list,
                                           biosphere_flows_2: list,
-                                          manually_checked_SBERTs: (pd.DataFrame | None),
+                                          manually_checked_SBERTs: (list | pd.DataFrame | None),
                                           output_path: pathlib.Path) -> dict:
     
     # Check function input type
     check_function_input_type(create_harmonized_biosphere_migration, locals())
     
-    # Extract the lists of unique names of biosphere flows from the two biospheres
-    unique_names_1: tuple = tuple(set([m["name"] for m in biosphere_flows_1]))
-    unique_names_2: tuple = tuple(set([m["name"] for m in biosphere_flows_2]))
-
-    # We now try to map using SBERT
-    name_mapping_via_SBERT: pd.DataFrame = map_using_SBERT(unique_names_1, unique_names_2, 3)
+    # Map using SBERT
+    df_SBERT_mapping: pd.DataFrame = map_using_SBERT([n["name"] for n in biosphere_flows_1], [m["name"] for m in biosphere_flows_2], 1) # !!! correct?
+    SBERT_mapping_dict: dict = {row["orig"]: (row["mapped"], float(1)) for idx, row in df_SBERT_mapping.iterrows() if row["score"] >= 0.98} # !!! correct?
     
-    # A mapping dictionary for biosphere flows using the unique fields 'name', 'top_category', 'sub_category', 'unit', 'location'
-    biosphere_mapping: dict = {prep((m["name"], m["top_category"], m["sub_category"], m["unit"], m["location"])): m for m in biosphere_flows_2 if m["location"] == "GLO"}
+    if isinstance(manually_checked_SBERTs, pd.DataFrame):
+        manually_checked_SBERTs: list[dict] = manually_checked_SBERTs.replace({float("NaN"): None}).to_dict("records")
     
-    # Construct mapping dictionaries of ecoinvent to SimaPro names based on the results from the SBERT mapping beforehand
-    # We are considering three different mappings. The first uses 100% correctly mapped names by only taking the mapped items with cosine score 1
-    SBERT_mapping_1: dict = {prep((n["orig"],))[0]: n["mapped"] for idx, n in name_mapping_via_SBERT.iterrows() if n["score"] > 0.98}
-
-    # The second one takes the second best mapped item with the second best cosine score
-    SBERT_mapping_2: dict = {prep((n["orig"],))[0]: n["mapped"] for idx, n in name_mapping_via_SBERT.iterrows() if prep((n["orig"],))[0] not in SBERT_mapping_1 and n["ranking"] == 3}
-
-    # The second one takes the third best mapped item with the third best cosine score
-    SBERT_mapping_3: dict = {prep((n["orig"],))[0]: n["mapped"] for idx, n in name_mapping_via_SBERT.iterrows() if prep((n["orig"],))[0] not in SBERT_mapping_1 and n["ranking"] == 2}
+    elif manually_checked_SBERTs is None:
+        manually_checked_SBERTs: list = []
     
-    if manually_checked_SBERTs is not None:
-        # SBERT_mapping_2_validated: dict = {prep((m,))[0]: [{"mapped": n["mapped"], "multiplier": n["multiplier"]} for idx, n in manually_checked_SBERTs.query("orig == @m").iterrows()] for m in set(list(manually_checked_SBERTs)) if prep((m,))[0] not in SBERT_mapping_1}
+    SBERT_mapping: dict = {m["orig"]: (m["mapped"], float(m["multiplier"])) for m in manually_checked_SBERTs if m.get("orig") is not None and m.get("mapped") is not None and m.get("multiplier") is not None}
+    SBERT_mapping |= SBERT_mapping_dict
+    SBERT_mapping |= {m["mapped"]: (m["orig"], float(1 / m["multiplier"])) for m in manually_checked_SBERTs if m.get("orig") is not None and m.get("mapped") is not None and m.get("multiplier") is not None and m.get("multiplier") != 0}
+    
+    # Create biosphere mapping dictionary
+    biosphere_mapping: dict = {}
+    
+    for m in biosphere_flows_2:
         
-        # Create a mapping from the dataframe
-        # Initialize empty dictionary
-        SBERT_mapping_2_validated: dict = {}
+        name: (str | None) = m.get("name") if m.get("name") != "" else None
+        SBERT_name: (str | None) = SBERT_mapping.get(name, (None, None))[0] if SBERT_mapping.get(name, (None, None))[0] != "" else None
+        SBERT_multiplier: float = float(SBERT_mapping.get(name, (None, None))[1]) if SBERT_mapping.get(name, (None, None))[1] != "" else float(1)
+        CAS: (str | None) = m.get("CAS number") if m.get("CAS number") != "" else None
+        top_category: (str | None) = m.get("top_category") if m.get("top_category") != "" else None
+        sub_category: (str | None) = m.get("sub_category") if m.get("sub_category") != "" else None
+        unit: (str | None) = m.get("unit") if m.get("unit") != "" else None
+        location: (str | None) = m.get("location") if m.get("location") != "" else None
         
-        # Loop through each FROM item
-        for FROM in set(list(manually_checked_SBERTs["orig"])):
-            
-            # Write to lowercase
-            FROM_lowered: str = prep((FROM,))[0]
-            
-            # Initialize dictionary key if not yet existing
-            if FROM_lowered not in SBERT_mapping_1 and FROM_lowered not in SBERT_mapping_2_validated:
-                SBERT_mapping_2_validated[FROM_lowered]: list[dict] = []
-            
-            # Loop through each TO
-            for idx, n in manually_checked_SBERTs.query("orig == @FROM").iterrows():
-                
-                # Extract and write to lowercase
-                TO_lowered: str = prep((n["mapped"],))[0]
-                multiplier: float = float(n["multiplier"])
-                
-                # Add to FROM_lowered
-                if FROM_lowered not in SBERT_mapping_1:
-                    SBERT_mapping_2_validated[FROM_lowered] += [{"mapped": TO_lowered, "multiplier": multiplier}]
-                
-                # Check if TO_lowered exists and continue if so
-                if TO_lowered in SBERT_mapping_1:
-                    continue
-                
-                # Register new key
-                if TO_lowered not in SBERT_mapping_2_validated:
-                    SBERT_mapping_2_validated[TO_lowered]: list[dict] = []
-                
-                # Add to TO_lowered
-                SBERT_mapping_2_validated[TO_lowered] += [{"mapped": FROM_lowered, "multiplier": 1 / multiplier}]
-    else:
-        SBERT_mapping_2_validated: dict = {} # !!! correct?
-    
-    # Extract all unique names with the respective CAS number from both lists of biosphere flows
-    unique_names_CAS_1: set = set([(m["name"], m["CAS number"]) for m in biosphere_flows_1 if m["CAS number"] is not None and m["CAS number"] != ""])
-    unique_names_CAS_2: set = set([(m["name"], m["CAS number"]) for m in biosphere_flows_2 if m["CAS number"] is not None and m["CAS number"] != ""])
-    
-    # Construct a mapping dictionary for flows from biosphere 2 where key is the CAS number and value is the name of the flow
-    CAS_to_name_mapping: dict = {n: m for m, n in unique_names_CAS_2}
-
-    # Construct a mapping file of biosphere 1 to biosphere 2 flow names via the CAS number
-    name_mapping_via_CAS: list[dict] = [{"orig": name,
-                                         "mapped": CAS_to_name_mapping.get(CAS),
-                                         "score": 1 if CAS_to_name_mapping.get(CAS) is not None else 0} for name, CAS in unique_names_CAS_1]
-
-    # Construct a mapping of biosphere 1 to biosphere 2 flow names via the CAS nr.
-    CAS_mapping: dict = {prep((n["orig"],))[0]: n["mapped"] for n in name_mapping_via_CAS if n["score"] == 1}
-    
-    # Construct a custom unit mapping
-    unit_mapping: dict = {"cubic meter": ("kilogram", 0.001),
-                          "square meter": ("square meter-year", 365),
-                          "standard cubic meter": ("cubic meter", 1),
-                          "megajoule": ("kilowatt hour", 3.6)}
-    
-    # Function to get closest biosphere flow match between two dictionaries
-    def get_closest_match(FROM_item: dict,
-                          TO_item: dict,
-                          mapping: dict) -> (dict | None):
+        if name is not None and top_category is not None and sub_category is not None and unit is not None and location is not None:
+            biosphere_mapping[prep((name, top_category, sub_category, unit, location))]: dict = m
         
-        TO_item_simplified = prep((TO_item["name"], TO_item["top_category"], TO_item["sub_category"], TO_item["unit"], TO_item["location"]))
-        found: (dict | None) = mapping.get(TO_item_simplified)
+        if SBERT_name is not None and top_category is not None and sub_category is not None and unit is not None and location is not None:
+            biosphere_mapping[prep((SBERT_name, top_category, sub_category, unit, location))]: dict = {**m, **{"multiplier": SBERT_multiplier}}    
+        
+        if CAS is not None and top_category is not None and sub_category is not None and unit is not None and location is not None:
+            biosphere_mapping[prep((CAS, top_category, sub_category, unit, location))]: dict = m
+        
+        if name is not None and top_category is not None and sub_category is None and unit is not None and location is not None:
+            biosphere_mapping[prep((name, top_category, unit, location))]: dict = m
+        
+        if SBERT_name is not None and top_category is not None and sub_category is None and unit is not None and location is not None:
+            biosphere_mapping[prep((SBERT_name, top_category, unit, location))]: dict = {**m, **{"multiplier": SBERT_multiplier}}    
+        
+        if CAS is not None and top_category is not None and sub_category is None and unit is not None and location is not None:
+            biosphere_mapping[prep((CAS, top_category, unit, location))]: dict = m
+            
+        if name is not None and top_category is not None and sub_category is not None and location is not None:
+            biosphere_mapping[prep((name, top_category, sub_category, location))]: dict = m
+        
+        if SBERT_name is not None and top_category is not None and sub_category is not None and location is not None:
+            biosphere_mapping[prep((SBERT_name, top_category, sub_category, location))]: dict = {**m, **{"multiplier": SBERT_multiplier}}
+        
+        if CAS is not None and top_category is not None and sub_category is not None and location is not None:
+            biosphere_mapping[prep((CAS, top_category, sub_category, location))]: dict = m
+        
+        if name is not None and top_category is not None and sub_category is None and location is not None:
+            biosphere_mapping[prep((name, top_category, location))]: dict = m
+         
+        if SBERT_name is not None and top_category is not None and sub_category is None and location is not None:
+            biosphere_mapping[prep((SBERT_name, top_category, location))]: dict = {**m, **{"multiplier": SBERT_multiplier}}
+         
+        if CAS is not None and top_category is not None and sub_category is None and location is not None:
+            biosphere_mapping[prep((CAS, top_category, location))]: dict = m
+        
+    
+    # Initialize a list to store migration data --> tuple of FROM and TO dicts
+    migration_data: dict[tuple[str, str, str, str, str], tuple[dict, (dict | None)]] = {}
+    counter_for_successfully_migrated: int = 0
+    counter_for_unsuccessfully_migrated: int = 0
+    
+    # Loop through each flow
+    # Check if it should be mapped
+    # Map if possible
+    for exc in biosphere_flows_1:
+            
+        exc_name: (str | None) = None if exc.get("name") == "" else exc.get("name")
+        exc_CAS: (str | None) = m.get("CAS number") if m.get("CAS number") != "" else None
+        exc_top_category: (str | None) = m.get("top_category") if m.get("top_category") != "" else None
+        exc_sub_category: (str | None) = m.get("sub_category") if m.get("sub_category") != "" else None
+        exc_unit: (str | None) = None if exc.get("unit") == "" else exc.get("unit")
+        exc_location: (str | None) = None if exc.get("location") == "" else exc.get("location")
+        found: None = None
+        
+        if (exc_name, exc_top_category, exc_sub_category, exc_unit, exc_location) in migration_data:
+            continue
+        
+        # if (exc_name, exc_top_category, exc_unit, exc_location) in migration_data:
+        #     continue
+
+        if exc_name is not None and exc_top_category is not None and exc_sub_category is not None and exc_unit is not None and exc_location is not None:
+            found: (dict | None) = biosphere_mapping.get(prep((exc_name, exc_top_category, exc_sub_category, exc_unit, exc_location)))
+        
+        if exc_name is not None and exc_top_category is not None and exc_sub_category is None and exc_unit is not None and exc_location is not None:
+            found: (dict | None) = biosphere_mapping.get(prep((exc_name, exc_top_category, exc_unit, exc_location)))
+        
+        if exc_CAS is not None and exc_top_category is not None and exc_sub_category is not None and exc_unit is not None and exc_location is not None:
+            found: (dict | None) = biosphere_mapping.get(prep((exc_CAS, exc_top_category, exc_sub_category, exc_unit, exc_location)))
+        
+        if exc_CAS is not None and exc_top_category is not None and exc_sub_category is None and exc_unit is not None and exc_location is not None:
+            found: (dict | None) = biosphere_mapping.get(prep((exc_CAS, exc_top_category, exc_unit, exc_location)))
+        
+        
+        
+        if exc_name is not None and exc_top_category is not None and exc_sub_category is not None and exc_location is not None:
+            found: (dict | None) = biosphere_mapping.get(prep((exc_name, exc_top_category, exc_sub_category, exc_location)))
+        
+        if exc_name is not None and exc_top_category is not None and exc_sub_category is None and exc_location is not None:
+            found: (dict | None) = biosphere_mapping.get(prep((exc_name, exc_top_category, exc_location)))
+        
+        if exc_CAS is not None and exc_top_category is not None and exc_sub_category is not None and exc_location is not None:
+            found: (dict | None) = biosphere_mapping.get(prep((exc_CAS, exc_top_category, exc_sub_category, exc_location)))
+        
+        if exc_CAS is not None and exc_top_category is not None and exc_sub_category is None and exc_location is not None:
+            found: (dict | None) = biosphere_mapping.get(prep((exc_CAS, exc_top_category, exc_location)))
+        
+        
         
         if found is not None:
-            return {**FROM_item, **update_keys(found, "TO_"), **{"multiplier": TO_item["multiplier"], "quality": TO_item["quality"], "quality_comment": TO_item["quality_comment"]}}
+            counter_for_successfully_migrated += 1
+            migration_data[(exc_name, exc_top_category, exc_sub_category, exc_unit, exc_location)]: tuple[dict, dict] = (exc, found)
         else:
-            return None
+            counter_for_unsuccessfully_migrated += 1
+            migration_data[(exc_name, exc_top_category, exc_sub_category, exc_unit, exc_location)]: tuple[dict, dict] = (exc, None)
+    
+    print("Successfully created migration for {} unique activity exchanges (non-production and non-biosphere)) out of {}.".format(counter_for_successfully_migrated, counter_for_successfully_migrated + counter_for_unsuccessfully_migrated))
     
     
-    # Initialize list
-    mapping: list = []
-
-    # Loop through each item that needs to be mapped
-    for item in biosphere_flows_1:
-        
-        # Store all original information and append 'FROM_' string to the keys in the dictionary
-        FROM_item = copy.deepcopy(update_keys(item, "FROM_"))
-        
-        # Make variables of the most relevant fields of the current item for easier handling
-        name: str = item["name"]
-        top_category: str = item["top_category"]
-        sub_category: (str | None) = item["sub_category"] # !!! None or empty string?
-        unit: str = item["unit"]
-        location: str = "GLO"
-        
-        # Find new names and new units based on the mappings beforehand
-        name_SBERT_mapped_1: str = SBERT_mapping_1.get(prep((name,))[0], "")
-        names_SBERT_mapped_2_validated: (list[str] | list) = SBERT_mapping_2_validated.get(prep((name,))[0], [])
-        name_SBERT_mapped_2: str = SBERT_mapping_2.get(prep((name,))[0], "")
-        name_SBERT_mapped_3: str = SBERT_mapping_3.get(prep((name,))[0], "")
-        name_CAS_mapped: str = CAS_mapping.get(prep((name,))[0], "")
-        unit_mapped: str = unit_mapping.get(unit, (unit, float(1)))[0]
-        unit_multiplier_mapped: float = unit_mapping.get(unit, (unit, float(1)))[1]
-
-        # Initialize a dictionary with the raw information
-        initial_ID: dict = {"name": name,
-                            "top_category": top_category,
-                            "sub_category": sub_category,
-                            "unit": unit,
-                            "location": location,
-                            "multiplier": float(1)}
-        
-        # Hierarchy and documentation for the matches found
-        mapping_info: dict[int, str] = {1: "Exact match",
-                                        2: "using new name from SBERT mapping (cosine similarity of 1)",
-                                        3: "using new name from manually validated SBERT mapping",
-                                        4: "using new name from CAS mapping",
-                                        5: "Exact match | empty sub category",
-                                        6: "using new name from SBERT mapping (cosine similarity of 1) | empty sub category",
-                                        7: "using new name from manually validated SBERT mapping | empty sub category",
-                                        8: "using new name from CAS mapping and empty sub category",
-                                        9: "using new name from SBERT mapping (2nd priority)",
-                                        10: "using new name from SBERT mapping (2nd priority) | empty sub category",
-                                        11: "using new name from SBERT mapping (3th priority)",
-                                        12: "using new name from SBERT mapping (3th priority) | empty sub category"
-                                        }
-        
-        # Assign the information according to their hierarchy to a dictionary
-        prios_1_built: dict[int, dict] = {1: initial_ID,
-                                          2: dict(initial_ID, **{"name": name_SBERT_mapped_1}),
-                                          3: [dict(initial_ID, **{"name": m["mapped"], "multiplier": m["multiplier"]}) for m in names_SBERT_mapped_2_validated],
-                                          4: dict(initial_ID, **{"name": name_CAS_mapped}),
-                                          5: dict(initial_ID, **{"sub_category": ""}),
-                                          6: dict(initial_ID, **{"name": name_SBERT_mapped_1, "sub_category": ""}),
-                                          7: [dict(initial_ID, **{"name": m["mapped"], "sub_category": "", "multiplier": m["multiplier"]}) for m in names_SBERT_mapped_2_validated],
-                                          8: dict(initial_ID, **{"name": name_CAS_mapped, "sub_category": ""}),  
-                                          9: dict(initial_ID, **{"name": name_SBERT_mapped_2}),
-                                          10: dict(initial_ID, **{"name": name_SBERT_mapped_2, "sub_category": ""}),
-                                          11: dict(initial_ID, **{"name": name_SBERT_mapped_3}),
-                                          12: dict(initial_ID, **{"name": name_SBERT_mapped_3, "sub_category": ""})
-                                          }
-        
-        # Create a flattened list of all matches --> convert from dictionary to list of tuples
-        prios_1_flattened: list = []
-        
-        # Loop through each key/value pair
-        for k, v in prios_1_built.items():
-            
-            # We flatten the list before appending, if the current value is of type list
-            if isinstance(v, list):
-                prios_1_flattened += [(k, m) for m in v]
-            else:
-                # Otherwise, we just append the key/value pair
-                prios_1_flattened += [(k, v)]
-        
-        # We add the documentation of the priority
-        prios_1_standardized: list[dict] = [dict(v, **{"quality": k, "quality_comment": mapping_info[k]}) for k, v in prios_1_flattened]
-        
-        # We remove the priorities where no match was found
-        prios_1_cleaned: list[dict] = [m for m in copy.deepcopy(prios_1_standardized) if m["name"] != ""]
-        
-        # We now basically duplicate the priorities
-        # Why? Because each priority could be also possible with another/transformed unit
-        mapping_info_units: dict = {k + 12: v + " | new unit" for k, v in mapping_info.items()}
-        
-        # We try to map the current unit, if possible
-        prios_2_cleaned: list[dict] = [dict(m, **{"unit": unit_mapped, "multiplier": m["multiplier"] * unit_multiplier_mapped, "quality": m["quality"] + 12, "quality_comment": mapping_info_units[m["quality"] + 12]}) for m in copy.deepcopy(prios_1_cleaned)]
-        
-        # Find the closest match between two dicts
-        found_orig: list[dict | None] = [get_closest_match(FROM_item = FROM_item,
-                                                           TO_item = TO_item,
-                                                           mapping = biosphere_mapping) for TO_item in prios_1_cleaned] + [get_closest_match(FROM_item = FROM_item,
-                                                                                                                                             TO_item = TO_item,
-                                                                                                                                             mapping = biosphere_mapping) for TO_item in prios_2_cleaned]
-        # We remove the unmatched entries
-        found_cleaned: list[dict] = [m for m in found_orig if m is not None]
-        
-        # We now append the best match with the highest priority to our list
-        # We check if at least one match was found
-        if len(found_cleaned) > 0:
-            
-            # If yes, we sort the list starting with the highest quality (in our case = lowest number)
-            found: list[dict] = sorted(found_cleaned, key = lambda x: x["quality"])
-            
-            # We then use the first element
-            mapping += [found[0]]
-        else:
-            # Otherwise, we append only the FROM item indicating that there was no good match found
-            mapping += [FROM_item]
+    # Construct a custom unit mapping
+    unit_mapping: dict = {"cubic meter": {"kilogram": 1000},
+                          "litre": {"cubic meter": 0.001},
+                          "square meter": {"hectare": 1/10000},
+                          "standard cubic meter": {"cubic meter": 1},
+                          "megajoule": {"kilowatt hour": 1/3.6},
+                          "kilowatt hour": {"megajoule": 3.6}
+                          }
     
-    # Identifying fields
-    ID_fields = ("name", "categories", "unit")
-    
-    # Create pandas dataframe of the result from the mapping
-    result: pd.DataFrame = pd.DataFrame(mapping)
-
-    # Add an ID of each flow
-    result["ID"] = [tuple([tuple(map(lambda x: x.lower().strip(), flow.get("FROM_" + m))) if isinstance(flow.get("FROM_" + m), tuple) else flow.get("FROM_" + m, "").lower().strip() for m in ID_fields]) for flow in mapping]
-    
-    # Exclude some data quality fields where mapping is inappropriate
-    exclude_data_quality: list[int] = [9, 10, 11, 12, 21, 22, 23, 24]
-    
-    # Construct two new dataframes
-    # ... filter the results and show only the successfully mapped items, excluding the ones where we need to revise (exclude data quality)
-    successful: pd.DataFrame = result[(result["quality"].isna() == False) & ~(result["quality"].isin(exclude_data_quality))]
-    
-    # ... filter the results and only show what we excluded (but was actually mapped with SBERT)
-    excluded: pd.DataFrame = result[(result["quality"].isna() == False) & (result["quality"].isin(exclude_data_quality))]
-    
-    # ... filter the results and show only the unsucessfully mapped items
-    missing: pd.DataFrame = result[(result["quality"].isna() == True)]
-
-    # We need to check the SBERT mapping manually
-    # We therefore write the list of all SBERT mappings that we used, exluding the ones where cosine similarity was 1
-    # SBERT_used: pd.DataFrame = successful.query("quality in @exclude_data_quality")
-    SBERT_used_unique: list = list(set(list(excluded.FROM_name)))
-    SBERT_to_check: pd.DataFrame = name_mapping_via_SBERT.query("orig in @SBERT_used_unique")
-
-    # Create summary dataframe
-    # Create detailed grouping of successfully matched flows using the quality criteria
-    successful_summary_1: pd.DataFrame = successful.groupby(["quality", "quality_comment"]).agg({"quality": "count"}).rename(columns = {"quality": "n"}).reset_index().rename(columns = {"quality_comment": "description"}).assign(**{"type": "matched"})
-    successful_summary_2: pd.DataFrame = pd.DataFrame({"description": "Total", "n": len(successful), "type": "matched"}, index = [1])
-    
-    # Excluded items
-    excluded_summary_1: pd.DataFrame = excluded.groupby(["quality", "quality_comment"]).agg({"quality": "count"}).rename(columns = {"quality": "n"}).reset_index().rename(columns = {"quality_comment": "description"}).assign(**{"type": "unmatched (currently excluded --> need to be revised first)"})
-    excluded_summary_2: pd.DataFrame = pd.DataFrame({"description": "Total", "n": len(excluded), "type": "unmatched (currently excluded --> need to be revised first)"}, index = [1])
-    
-    # Create an empty row
-    empty: pd.DataFrame = pd.DataFrame({"n": float("NaN")}, index = [1])
-
-    # Create row with the total number of flows which are missing
-    missing_summary: pd.DataFrame = pd.DataFrame({"description": "Total", "n": len(missing), "type": "unmatched"}, index = [1])
-
-    # Create row for the total of flows (matched and unmatched)
-    total_summary: pd.DataFrame = pd.DataFrame({"n": len(successful) + len(excluded) + len(missing), "description": "Total", "type": "matched + unmatched (incl. excluded)"}, index = [1])
-
-    # Concat the dataframes
-    summary: pd.DataFrame = pd.concat([successful_summary_1, empty, excluded_summary_1, empty, excluded_summary_2, successful_summary_2, missing_summary, total_summary])
-    
-    # Documentation dataframe
-    documentation: pd.DataFrame = pd.DataFrame([{"quality": k, "quality_comment": v} for k, v in mapping_info.items()])
-    
-    # Write dataframes to Excel
-    with pd.ExcelWriter(output_path / "biosphere_harmonization.xlsx", engine = "xlsxwriter") as writer:
-        documentation.to_excel(writer, sheet_name = "documentation", index = False)
-        successful.to_excel(writer, sheet_name = "biosphere_matched", index = False)   
-        excluded.to_excel(writer, sheet_name = "biosphere_unmatched_excluded", index = False)   
-        missing.to_excel(writer, sheet_name = "biosphere_unmatched", index = False)  
-        SBERT_to_check.to_excel(writer, sheet_name = "SBERT_to_check", index = False)
-        summary.to_excel(writer, sheet_name = "biosphere_summary", index = False)
-
-    # Construction of the Brightway2 migration dictionary
-    # Specify the fields that should be used as 'fields' in the migration dictionary
-    FROM_fields = ("code",)
-
     # Specify the fields to which should be mapped to
-    TO_fields = ("name",
+    TO_fields = ("code",
+                 "name",
                  "SimaPro_name",
                  "categories",
                  "top_category",
@@ -312,29 +177,360 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
                  "unit",
                  "SimaPro_unit",
                  "location")
-
+    
     # Initialize empty migration dictionary
-    migration_data = {"fields": FROM_fields + ("type",),
-                      "data": []}
-
+    migration_dict: dict = {"fields": ("code",),
+                            "data": []}
+    
     # Write all items which have been successfully mapped to the data field in the migration dictionary
-    for m in successful.fillna("").to_dict("records"):
+    for FROM, TO in migration_data.values():
+        
+        if TO is None:
+            continue
+        
+        if "multiplier" in TO:
+            multiplier: float = TO["multiplier"]
+        
+        elif FROM["unit"] == TO["unit"]:
+            multiplier: float = float(1)
+        
+        else:
+            multiplier: (float | None) = unit_mapping.get(FROM["unit"], {}).get(TO["unit"])
+            
+            if multiplier is None:
+                raise ValueError("Multiplier could not be retrieved, FROM_unit = '{}', TO_unit = '{}'".format(FROM["unit"], TO["unit"]))
         
         # Field one always specifies to which item the mapping should be applied.
-        one: list[str] = [str(m["FROM_" + n]) for n in FROM_fields] + ["biosphere"]
+        one: list[str] = [FROM[n] for n in migration_dict["fields"]]
         
         # Field two always specifies the new data that should be applied to update the original data
-        two: dict = dict(**{str(o): str(m["TO_" + o]) for o in TO_fields}, **{"multiplier": m["multiplier"]})
+        two: dict = dict(**{str(o): str(TO[o]) for o in TO_fields}, **{"multiplier": multiplier})
         
-        # We do not map anything if mapping was not successful beforehand
-        if m["quality"] == "" or m["quality"] in exclude_data_quality:
-            two: dict = {n: m["FROM_" + n] for n in TO_fields if "FROM_" + n in m}
-
         # Add to migration dictionary
-        migration_data["data"] += [[one, two]]
+        migration_dict["data"] += [[one + ["biosphere"], two]]
+    
+    migration_dict["fields"] += ("type",)
+      
+    return migration_dict
+    
         
-    return migration_data
+    
 
+
+#%% Function to link biosphere flows between two biospheres
+# # BackUp
+# def create_harmonized_biosphere_migration(biosphere_flows_1: list,
+#                                           biosphere_flows_2: list,
+#                                           manually_checked_SBERTs: (pd.DataFrame | None),
+#                                           output_path: pathlib.Path) -> dict:
+    
+#     # Check function input type
+#     check_function_input_type(create_harmonized_biosphere_migration, locals())
+    
+#     # Extract the lists of unique names of biosphere flows from the two biospheres
+#     unique_names_1: tuple = tuple(set([m["name"] for m in biosphere_flows_1]))
+#     unique_names_2: tuple = tuple(set([m["name"] for m in biosphere_flows_2]))
+
+#     # We now try to map using SBERT
+#     name_mapping_via_SBERT: pd.DataFrame = map_using_SBERT(unique_names_1, unique_names_2, 3)
+    
+#     # A mapping dictionary for biosphere flows using the unique fields 'name', 'top_category', 'sub_category', 'unit', 'location'
+#     biosphere_mapping: dict = {prep((m["name"], m["top_category"], m["sub_category"], m["unit"], m["location"])): m for m in biosphere_flows_2 if m["location"] == "GLO"}
+    
+#     # Construct mapping dictionaries of ecoinvent to SimaPro names based on the results from the SBERT mapping beforehand
+#     # We are considering three different mappings. The first uses 100% correctly mapped names by only taking the mapped items with cosine score 1
+#     SBERT_mapping_1: dict = {prep((n["orig"],))[0]: n["mapped"] for idx, n in name_mapping_via_SBERT.iterrows() if n["score"] > 0.98}
+
+#     # The second one takes the second best mapped item with the second best cosine score
+#     SBERT_mapping_2: dict = {prep((n["orig"],))[0]: n["mapped"] for idx, n in name_mapping_via_SBERT.iterrows() if prep((n["orig"],))[0] not in SBERT_mapping_1 and n["ranking"] == 3}
+
+#     # The second one takes the third best mapped item with the third best cosine score
+#     SBERT_mapping_3: dict = {prep((n["orig"],))[0]: n["mapped"] for idx, n in name_mapping_via_SBERT.iterrows() if prep((n["orig"],))[0] not in SBERT_mapping_1 and n["ranking"] == 2}
+    
+#     if manually_checked_SBERTs is not None:
+#         # SBERT_mapping_2_validated: dict = {prep((m,))[0]: [{"mapped": n["mapped"], "multiplier": n["multiplier"]} for idx, n in manually_checked_SBERTs.query("orig == @m").iterrows()] for m in set(list(manually_checked_SBERTs)) if prep((m,))[0] not in SBERT_mapping_1}
+        
+#         # Create a mapping from the dataframe
+#         # Initialize empty dictionary
+#         SBERT_mapping_2_validated: dict = {}
+        
+#         # Loop through each FROM item
+#         for FROM in set(list(manually_checked_SBERTs["orig"])):
+            
+#             # Write to lowercase
+#             FROM_lowered: str = prep((FROM,))[0]
+            
+#             # Initialize dictionary key if not yet existing
+#             if FROM_lowered not in SBERT_mapping_1 and FROM_lowered not in SBERT_mapping_2_validated:
+#                 SBERT_mapping_2_validated[FROM_lowered]: list[dict] = []
+            
+#             # Loop through each TO
+#             for idx, n in manually_checked_SBERTs.query("orig == @FROM").iterrows():
+                
+#                 # Extract and write to lowercase
+#                 TO_lowered: str = prep((n["mapped"],))[0]
+#                 multiplier: float = float(n["multiplier"])
+                
+#                 # Add to FROM_lowered
+#                 if FROM_lowered not in SBERT_mapping_1:
+#                     SBERT_mapping_2_validated[FROM_lowered] += [{"mapped": TO_lowered, "multiplier": multiplier}]
+                
+#                 # Check if TO_lowered exists and continue if so
+#                 if TO_lowered in SBERT_mapping_1:
+#                     continue
+                
+#                 # Register new key
+#                 if TO_lowered not in SBERT_mapping_2_validated:
+#                     SBERT_mapping_2_validated[TO_lowered]: list[dict] = []
+                
+#                 # Add to TO_lowered
+#                 SBERT_mapping_2_validated[TO_lowered] += [{"mapped": FROM_lowered, "multiplier": 1 / multiplier}]
+#     else:
+#         SBERT_mapping_2_validated: dict = {} # !!! correct?
+    
+#     # Extract all unique names with the respective CAS number from both lists of biosphere flows
+#     unique_names_CAS_1: set = set([(m["name"], m["CAS number"]) for m in biosphere_flows_1 if m["CAS number"] is not None and m["CAS number"] != ""])
+#     unique_names_CAS_2: set = set([(m["name"], m["CAS number"]) for m in biosphere_flows_2 if m["CAS number"] is not None and m["CAS number"] != ""])
+    
+#     # Construct a mapping dictionary for flows from biosphere 2 where key is the CAS number and value is the name of the flow
+#     CAS_to_name_mapping: dict = {n: m for m, n in unique_names_CAS_2}
+
+#     # Construct a mapping file of biosphere 1 to biosphere 2 flow names via the CAS number
+#     name_mapping_via_CAS: list[dict] = [{"orig": name,
+#                                           "mapped": CAS_to_name_mapping.get(CAS),
+#                                           "score": 1 if CAS_to_name_mapping.get(CAS) is not None else 0} for name, CAS in unique_names_CAS_1]
+
+#     # Construct a mapping of biosphere 1 to biosphere 2 flow names via the CAS nr.
+#     CAS_mapping: dict = {prep((n["orig"],))[0]: n["mapped"] for n in name_mapping_via_CAS if n["score"] == 1}
+    
+#     # Construct a custom unit mapping
+#     unit_mapping: dict = {"cubic meter": ("kilogram", 1000),
+#                           # "square meter": ("square meter-year", 365), # !!!
+#                           "standard cubic meter": ("cubic meter", 1),
+#                           "megajoule": ("kilowatt hour", 1/3.6)}
+    
+#     # Function to get closest biosphere flow match between two dictionaries
+#     def get_closest_match(FROM_item: dict,
+#                           TO_item: dict,
+#                           mapping: dict) -> (dict | None):
+        
+#         TO_item_simplified = prep((TO_item["name"], TO_item["top_category"], TO_item["sub_category"], TO_item["unit"], TO_item["location"]))
+#         found: (dict | None) = mapping.get(TO_item_simplified)
+        
+#         if found is not None:
+#             return {**FROM_item, **update_keys(found, "TO_"), **{"multiplier": TO_item["multiplier"], "quality": TO_item["quality"], "quality_comment": TO_item["quality_comment"]}}
+#         else:
+#             return None
+    
+    
+#     # Initialize list
+#     mapping: list = []
+
+#     # Loop through each item that needs to be mapped
+#     for item in biosphere_flows_1:
+        
+#         # Store all original information and append 'FROM_' string to the keys in the dictionary
+#         FROM_item = copy.deepcopy(update_keys(item, "FROM_"))
+        
+#         # Make variables of the most relevant fields of the current item for easier handling
+#         name: str = item["name"]
+#         top_category: str = item["top_category"]
+#         sub_category: (str | None) = item["sub_category"] # !!! None or empty string?
+#         unit: str = item["unit"]
+#         location: str = "GLO"
+        
+#         # Find new names and new units based on the mappings beforehand
+#         name_SBERT_mapped_1: str = SBERT_mapping_1.get(prep((name,))[0], "")
+#         names_SBERT_mapped_2_validated: (list[str] | list) = SBERT_mapping_2_validated.get(prep((name,))[0], [])
+#         name_SBERT_mapped_2: str = SBERT_mapping_2.get(prep((name,))[0], "")
+#         name_SBERT_mapped_3: str = SBERT_mapping_3.get(prep((name,))[0], "")
+#         name_CAS_mapped: str = CAS_mapping.get(prep((name,))[0], "")
+#         unit_mapped: str = unit_mapping.get(unit, (unit, float(1)))[0]
+#         unit_multiplier_mapped: float = unit_mapping.get(unit, (unit, float(1)))[1]
+
+#         # Initialize a dictionary with the raw information
+#         initial_ID: dict = {"name": name,
+#                             "top_category": top_category,
+#                             "sub_category": sub_category,
+#                             "unit": unit,
+#                             "location": location,
+#                             "multiplier": float(1)}
+        
+#         # Hierarchy and documentation for the matches found
+#         mapping_info: dict[int, str] = {1: "Exact match",
+#                                         2: "using new name from SBERT mapping (cosine similarity of 1)",
+#                                         3: "using new name from manually validated SBERT mapping",
+#                                         4: "using new name from CAS mapping",
+#                                         5: "Exact match | empty sub category",
+#                                         6: "using new name from SBERT mapping (cosine similarity of 1) | empty sub category",
+#                                         7: "using new name from manually validated SBERT mapping | empty sub category",
+#                                         8: "using new name from CAS mapping and empty sub category",
+#                                         9: "using new name from SBERT mapping (2nd priority)",
+#                                         10: "using new name from SBERT mapping (2nd priority) | empty sub category",
+#                                         11: "using new name from SBERT mapping (3th priority)",
+#                                         12: "using new name from SBERT mapping (3th priority) | empty sub category"
+#                                         }
+        
+#         # Assign the information according to their hierarchy to a dictionary
+#         prios_1_built: dict[int, dict] = {1: initial_ID,
+#                                           2: dict(initial_ID, **{"name": name_SBERT_mapped_1}),
+#                                           3: [dict(initial_ID, **{"name": m["mapped"], "multiplier": m["multiplier"]}) for m in names_SBERT_mapped_2_validated],
+#                                           4: dict(initial_ID, **{"name": name_CAS_mapped}),
+#                                           5: dict(initial_ID, **{"sub_category": ""}),
+#                                           6: dict(initial_ID, **{"name": name_SBERT_mapped_1, "sub_category": ""}),
+#                                           7: [dict(initial_ID, **{"name": m["mapped"], "sub_category": "", "multiplier": m["multiplier"]}) for m in names_SBERT_mapped_2_validated],
+#                                           8: dict(initial_ID, **{"name": name_CAS_mapped, "sub_category": ""}),  
+#                                           9: dict(initial_ID, **{"name": name_SBERT_mapped_2}),
+#                                           10: dict(initial_ID, **{"name": name_SBERT_mapped_2, "sub_category": ""}),
+#                                           11: dict(initial_ID, **{"name": name_SBERT_mapped_3}),
+#                                           12: dict(initial_ID, **{"name": name_SBERT_mapped_3, "sub_category": ""})
+#                                           }
+        
+#         # Create a flattened list of all matches --> convert from dictionary to list of tuples
+#         prios_1_flattened: list = []
+        
+#         # Loop through each key/value pair
+#         for k, v in prios_1_built.items():
+            
+#             # We flatten the list before appending, if the current value is of type list
+#             if isinstance(v, list):
+#                 prios_1_flattened += [(k, m) for m in v]
+#             else:
+#                 # Otherwise, we just append the key/value pair
+#                 prios_1_flattened += [(k, v)]
+        
+#         # We add the documentation of the priority
+#         prios_1_standardized: list[dict] = [dict(v, **{"quality": k, "quality_comment": mapping_info[k]}) for k, v in prios_1_flattened]
+        
+#         # We remove the priorities where no match was found
+#         prios_1_cleaned: list[dict] = [m for m in copy.deepcopy(prios_1_standardized) if m["name"] != ""]
+        
+#         # We now basically duplicate the priorities
+#         # Why? Because each priority could be also possible with another/transformed unit
+#         mapping_info_units: dict = {k + 12: v + " | new unit" for k, v in mapping_info.items()}
+        
+#         # We try to map the current unit, if possible
+#         prios_2_cleaned: list[dict] = [dict(m, **{"unit": unit_mapped, "multiplier": m["multiplier"] * unit_multiplier_mapped, "quality": m["quality"] + 12, "quality_comment": mapping_info_units[m["quality"] + 12]}) for m in copy.deepcopy(prios_1_cleaned)]
+        
+#         # Find the closest match between two dicts
+#         found_orig: list[dict | None] = [get_closest_match(FROM_item = FROM_item,
+#                                                             TO_item = TO_item,
+#                                                             mapping = biosphere_mapping) for TO_item in prios_1_cleaned] + [get_closest_match(FROM_item = FROM_item,
+#                                                                                                                                               TO_item = TO_item,
+#                                                                                                                                               mapping = biosphere_mapping) for TO_item in prios_2_cleaned]
+#         # We remove the unmatched entries
+#         found_cleaned: list[dict] = [m for m in found_orig if m is not None]
+        
+#         # We now append the best match with the highest priority to our list
+#         # We check if at least one match was found
+#         if len(found_cleaned) > 0:
+            
+#             # If yes, we sort the list starting with the highest quality (in our case = lowest number)
+#             found: list[dict] = sorted(found_cleaned, key = lambda x: x["quality"])
+            
+#             # We then use the first element
+#             mapping += [found[0]]
+#         else:
+#             # Otherwise, we append only the FROM item indicating that there was no good match found
+#             mapping += [FROM_item]
+    
+#     # Identifying fields
+#     ID_fields = ("name", "categories", "unit")
+    
+#     # Create pandas dataframe of the result from the mapping
+#     result: pd.DataFrame = pd.DataFrame(mapping)
+
+#     # Add an ID of each flow
+#     result["ID"] = [tuple([tuple(map(lambda x: x.lower().strip(), flow.get("FROM_" + m))) if isinstance(flow.get("FROM_" + m), tuple) else flow.get("FROM_" + m, "").lower().strip() for m in ID_fields]) for flow in mapping]
+    
+#     # Exclude some data quality fields where mapping is inappropriate
+#     exclude_data_quality: list[int] = [9, 10, 11, 12, 21, 22, 23, 24]
+    
+#     # Construct two new dataframes
+#     # ... filter the results and show only the successfully mapped items, excluding the ones where we need to revise (exclude data quality)
+#     successful: pd.DataFrame = result[(result["quality"].isna() == False) & ~(result["quality"].isin(exclude_data_quality))]
+    
+#     # ... filter the results and only show what we excluded (but was actually mapped with SBERT)
+#     excluded: pd.DataFrame = result[(result["quality"].isna() == False) & (result["quality"].isin(exclude_data_quality))]
+    
+#     # ... filter the results and show only the unsucessfully mapped items
+#     missing: pd.DataFrame = result[(result["quality"].isna() == True)]
+
+#     # We need to check the SBERT mapping manually
+#     # We therefore write the list of all SBERT mappings that we used, exluding the ones where cosine similarity was 1
+#     # SBERT_used: pd.DataFrame = successful.query("quality in @exclude_data_quality")
+#     SBERT_used_unique: list = list(set(list(excluded.FROM_name)))
+#     SBERT_to_check: pd.DataFrame = name_mapping_via_SBERT.query("orig in @SBERT_used_unique")
+
+#     # Create summary dataframe
+#     # Create detailed grouping of successfully matched flows using the quality criteria
+#     successful_summary_1: pd.DataFrame = successful.groupby(["quality", "quality_comment"]).agg({"quality": "count"}).rename(columns = {"quality": "n"}).reset_index().rename(columns = {"quality_comment": "description"}).assign(**{"type": "matched"})
+#     successful_summary_2: pd.DataFrame = pd.DataFrame({"description": "Total", "n": len(successful), "type": "matched"}, index = [1])
+    
+#     # Excluded items
+#     excluded_summary_1: pd.DataFrame = excluded.groupby(["quality", "quality_comment"]).agg({"quality": "count"}).rename(columns = {"quality": "n"}).reset_index().rename(columns = {"quality_comment": "description"}).assign(**{"type": "unmatched (currently excluded --> need to be revised first)"})
+#     excluded_summary_2: pd.DataFrame = pd.DataFrame({"description": "Total", "n": len(excluded), "type": "unmatched (currently excluded --> need to be revised first)"}, index = [1])
+    
+#     # Create an empty row
+#     empty: pd.DataFrame = pd.DataFrame({"n": float("NaN")}, index = [1])
+
+#     # Create row with the total number of flows which are missing
+#     missing_summary: pd.DataFrame = pd.DataFrame({"description": "Total", "n": len(missing), "type": "unmatched"}, index = [1])
+
+#     # Create row for the total of flows (matched and unmatched)
+#     total_summary: pd.DataFrame = pd.DataFrame({"n": len(successful) + len(excluded) + len(missing), "description": "Total", "type": "matched + unmatched (incl. excluded)"}, index = [1])
+
+#     # Concat the dataframes
+#     summary: pd.DataFrame = pd.concat([successful_summary_1, empty, excluded_summary_1, empty, excluded_summary_2, successful_summary_2, missing_summary, total_summary])
+    
+#     # Documentation dataframe
+#     documentation: pd.DataFrame = pd.DataFrame([{"quality": k, "quality_comment": v} for k, v in mapping_info.items()])
+    
+#     # Write dataframes to Excel
+#     with pd.ExcelWriter(output_path / "biosphere_harmonization.xlsx", engine = "xlsxwriter") as writer:
+#         documentation.to_excel(writer, sheet_name = "documentation", index = False)
+#         successful.to_excel(writer, sheet_name = "biosphere_matched", index = False)   
+#         excluded.to_excel(writer, sheet_name = "biosphere_unmatched_excluded", index = False)   
+#         missing.to_excel(writer, sheet_name = "biosphere_unmatched", index = False)  
+#         SBERT_to_check.to_excel(writer, sheet_name = "SBERT_to_check", index = False)
+#         summary.to_excel(writer, sheet_name = "biosphere_summary", index = False)
+
+#     # Construction of the Brightway2 migration dictionary
+#     # Specify the fields that should be used as 'fields' in the migration dictionary
+#     FROM_fields = ("code",)
+
+#     # Specify the fields to which should be mapped to
+#     TO_fields = ("name",
+#                   "SimaPro_name",
+#                   "categories",
+#                   "top_category",
+#                   "sub_category",
+#                   "SimaPro_categories",
+#                   "unit",
+#                   "SimaPro_unit",
+#                   "location")
+
+#     # Initialize empty migration dictionary
+#     migration_data = {"fields": FROM_fields + ("type",),
+#                       "data": []}
+
+#     # Write all items which have been successfully mapped to the data field in the migration dictionary
+#     for m in successful.fillna("").to_dict("records"):
+        
+#         # Field one always specifies to which item the mapping should be applied.
+#         one: list[str] = [str(m["FROM_" + n]) for n in FROM_fields] + ["biosphere"]
+        
+#         # Field two always specifies the new data that should be applied to update the original data
+#         two: dict = dict(**{str(o): str(m["TO_" + o]) for o in TO_fields}, **{"multiplier": m["multiplier"]})
+        
+#         # We do not map anything if mapping was not successful beforehand
+#         if m["quality"] == "" or m["quality"] in exclude_data_quality:
+#             two: dict = {n: m["FROM_" + n] for n in TO_fields if "FROM_" + n in m}
+
+#         # Add to migration dictionary
+#         migration_data["data"] += [[one, two]]
+        
+#     return migration_data
 
 
 #%% Check which flows are not used in LCIA methods from ecoinvent XML
@@ -364,12 +560,11 @@ def elementary_flows_that_are_not_used_in_XML_methods(elementary_flows: list,
 
 
 
-#%% Function to link biosphere flows between two biospheres
+#%% Function to link activities between two activity databases
 
-def create_harmonized_activity_migration(activity_flows_1: list,
-                                         activity_flows_2: list,
-                                         correspondence_mapping: (list | pd.DataFrame),
-                                         output_path: pathlib.Path) -> dict:
+def create_harmonized_activity_migration(flows_1: list,
+                                         flows_2: list,
+                                         correspondence_mapping: (list | pd.DataFrame | None)) -> dict:
     
     # Check function input type
     check_function_input_type(create_harmonized_activity_migration, locals())
@@ -378,11 +573,15 @@ def create_harmonized_activity_migration(activity_flows_1: list,
     if isinstance(correspondence_mapping, pd.DataFrame):
         correspondence_mapping: list[dict] = correspondence_mapping.to_dict("records")
     
+    # Default list if no correspondence mapping is provided
+    if correspondence_mapping is None:
+        correspondence_mapping: list = []
+    
     # Initialize a dictionary to store elements to which can be mapped to
     activity_mapping: dict = {}
     
     # Loop through each of the activity that can be mapped to
-    for act in activity_flows_2:
+    for act in flows_2:
         
         SimaPro_name: (str | None) = None if act.get("SimaPro_name") == "" else act.get("SimaPro_name")
         name: (str | None) = None if act.get("name") == "" else act.get("name")
@@ -397,14 +596,20 @@ def create_harmonized_activity_migration(activity_flows_1: list,
             activity_mapping[prep((SimaPro_name,))[0]]: dict = act  
         
         if name is not None and unit is not None and location is not None:
-            activity_mapping[prep((name, unit, location))]: dict = act   
+            activity_mapping[prep((name, unit, location))]: dict = act
+            
+        if name is not None and location is not None:
+            activity_mapping[prep((name, location))]: dict = act 
         
         if activity_code is not None and reference_product_code is not None:
             activity_mapping[(activity_code, reference_product_code)]: dict = act
         
-        if activity_name is not None and reference_product_name is not None and unit is not None and location is not None:
-            activity_mapping[prep((activity_name, reference_product_name, unit, location))]: dict = act   
+        if activity_name is not None and reference_product_name is not None and location is not None:
+            activity_mapping[prep((activity_name, reference_product_name, location))]: dict = act 
         
+        if activity_name is not None and reference_product_name is not None and unit is not None and location is not None:
+            activity_mapping[prep((activity_name, reference_product_name, unit, location))]: dict = act
+    
 
     # Loop through each item from the correspondence files
     for m in correspondence_mapping:
@@ -431,52 +636,127 @@ def create_harmonized_activity_migration(activity_flows_1: list,
     
     
     # Initialize a list to store migration data --> tuple of FROM and TO dicts
-    migration_data: list[tuple[dict, (dict | None)]] = []
+    migration_data: dict[tuple[str, str, str], tuple[dict, (dict | None)]] = {}
+    counter_for_successfully_migrated: int = 0
+    counter_for_unsuccessfully_migrated: int = 0
     
-    # Loop through each activity
+    # Loop through each flow
     # Check if it should be mapped
     # Map if possible
-    for ds in activity_flows_1:
-        for exc in ds["exchanges"]:
+    for exc in flows_1:
             
-            if exc["type"] in ["production", "biosphere"]:
-                continue
+        exc_SimaPro_name: (str | None) = None if exc.get("SimaPro_name") == "" else exc.get("SimaPro_name")
+        exc_name: (str | None) = None if exc.get("name") == "" else exc.get("name")
+        exc_unit: (str | None) = None if exc.get("unit") == "" else exc.get("unit")
+        exc_location: (str | None) = None if exc.get("location") == "" else exc.get("location")
+        exc_activity_name: (str | None) = None if exc.get("activity_name") == "" else exc.get("activity_name")
+        exc_activity_code: (str | None) = None if exc.get("activity_code") == "" else exc.get("activity_code")
+        exc_reference_product_name: (str | None) = None if exc.get("reference_product_name") == "" else exc.get("reference_product_name")
+        exc_reference_product_code: (str | None) = None if exc.get("reference_product_code") == "" else exc.get("reference_product_code")
+        found: None = None
+        
+        if (exc_name, exc_unit, exc_location) in migration_data:
+            continue
+        
+        if found is None and exc_SimaPro_name is not None:
+            found: (dict | None) = activity_mapping.get(prep((exc_SimaPro_name,))[0])
+        
+        if exc_name is not None and exc_unit is not None and exc_location is not None:
+            found: (dict | None) = activity_mapping.get(prep((exc_name, exc_unit, exc_location)))
+        
+        if found is None and exc_name is not None and exc_unit is not None and exc_location is not None:
+            exc_created_simapro_name: str = "{} {{{}}}|{}".format(exc_reference_product_name, exc_location, exc_activity_name) 
+            found: (list[dict] | list) = [v for k, v in activity_mapping.items() if isinstance(k, str) and k.startswith(prep((exc_created_simapro_name,))[0])]
+            found: (dict | None) = found[0] if len(found) > 0 else None
+        
+        if found is None and exc_activity_code is not None and exc_reference_product_code is not None:
+            found: (dict | None) = activity_mapping.get((exc_activity_code, exc_reference_product_code)) 
+        
+        if found is None and exc_activity_name is not None and exc_reference_product_name is not None and exc_unit is not None and exc_location is not None:
+            found: (dict | None) = activity_mapping.get(prep((exc_activity_name, exc_reference_product_name, exc_unit, exc_location))) 
+        
+        if found is None and reference_product_name is not None and activity_name is not None and exc_unit is not None and exc_location is not None:
+            found: (dict | None) = activity_mapping.get(prep((activity_name + " " + reference_product_name, exc_reference_product_name, exc_unit, exc_location)))
             
-            if not exc.get("is_ecoinvent", True):
-                continue
+        if found is None and reference_product_name is not None and activity_name is not None and exc_unit is not None and exc_location is not None:
+            found: (dict | None) = activity_mapping.get(prep((reference_product_name + " " + activity_name, exc_reference_product_name, exc_unit, exc_location)))
+        
+        if found is None and exc_name is not None and exc_location is not None:
+            found: (dict | None) = activity_mapping.get(prep((exc_name, exc_location)))
+        
+        if found is None and exc_activity_name is not None and exc_reference_product_name is not None and exc_location is not None:
+            found: (dict | None) = activity_mapping.get(prep((exc_activity_name, exc_reference_product_name, exc_location))) 
+        
+        if found is None and reference_product_name is not None and activity_name is not None and exc_location is not None:
+            found: (dict | None) = activity_mapping.get(prep((activity_name + " " + reference_product_name, exc_reference_product_name, exc_location)))
             
-            exc_SimaPro_name: (str | None) = None if exc.get("SimaPro_name") == "" else exc.get("SimaPro_name")
-            exc_name: (str | None) = None if exc.get("name") == "" else exc.get("name")
-            exc_unit: (str | None) = None if exc.get("unit") == "" else exc.get("unit")
-            exc_location: (str | None) = None if exc.get("location") == "" else exc.get("location")
-            exc_activity_name: (str | None) = None if exc.get("activity_name") == "" else exc.get("activity_name")
-            exc_activity_code: (str | None) = None if exc.get("activity_code") == "" else exc.get("activity_code")
-            exc_reference_product_name: (str | None) = None if exc.get("reference_product_name") == "" else exc.get("reference_product_name")
-            exc_reference_product_code: (str | None) = None if exc.get("reference_product_code") == "" else exc.get("reference_product_code")
-            found: None = None
+        if found is None and reference_product_name is not None and activity_name is not None and exc_location is not None:
+            found: (dict | None) = activity_mapping.get(prep((reference_product_name + " " + activity_name, exc_reference_product_name, exc_location)))
+        
+        
+        if found is not None:
+            counter_for_successfully_migrated += 1
+            migration_data[(exc_name, exc_unit, exc_location)]: tuple[dict, dict] = (exc, found)
+        else:
+            counter_for_unsuccessfully_migrated += 1
+            migration_data[(exc_name, exc_unit, exc_location)]: tuple[dict, dict] = (exc, None)
+    
+    print("Successfully created migration for {} unique activity exchanges (non-production and non-biosphere)) out of {}.".format(counter_for_successfully_migrated, counter_for_successfully_migrated + counter_for_unsuccessfully_migrated))
+    
+    # Construct a custom unit mapping
+    unit_mapping: dict = {"cubic meter": {"kilogram": 1000},
+                          "litre": {"cubic meter": 0.001},
+                          "square meter": {"hectare": 1/10000},
+                          "standard cubic meter": {"cubic meter": 1},
+                          "megajoule": {"kilowatt hour": 1/3.6},
+                          "kilowatt hour": {"megajoule": 3.6}
+                          }
+    
+    # Specify the fields to which should be mapped to
+    TO_fields = ("code",
+                 "name",
+                 "SimaPro_name",
+                 "categories",
+                 # "top_category",
+                 # "sub_category",
+                 "SimaPro_categories",
+                 "unit",
+                 "SimaPro_unit",
+                 "location")
+    
+    # Initialize empty migration dictionary
+    migration_dict: dict = {"fields": ("name", "unit", "location"),
+                            "data": []}
+    
+    # Write all items which have been successfully mapped to the data field in the migration dictionary
+    for FROM, TO in migration_data.values():
+        
+        if TO is None:
+            continue
+        
+        if FROM["unit"] == TO["unit"]:
+            multiplier: float = float(1)
+        
+        else:
+            multiplier: (float | None) = unit_mapping.get(FROM["unit"], {}).get(TO["unit"])
             
-            if found is not None and exc_SimaPro_name is not None:
-                found: (dict | None) = activity_mapping.get(prep((exc_SimaPro_name,))[0])
-            
-            if exc_name is not None and exc_unit is not None and exc_location is not None:
-                found: (dict | None) = activity_mapping.get(prep((exc_name, exc_unit, exc_location)))
-            
-            if found is None and exc_name is not None and exc_unit is not None and exc_location is not None:
-                exc_created_simapro_name: str = "{} {{{}}}|{}".format(exc_reference_product_name, exc_location, exc_activity_name) 
-                found: (list[dict] | list) = [v for k, v in activity_mapping.items() if isinstance(k, str) and k.startswith(prep((exc_created_simapro_name,))[0])]
-                found: (dict | None) = found[0] if len(found) > 0 else None
-            
-            if found is not None and exc_activity_code is not None and exc_reference_product_code is not None:
-                found: (dict | None) = activity_mapping.get((exc_activity_code, exc_reference_product_code)) 
-            
-            if found is not None and exc_activity_name is not None and exc_reference_product_name is not None and exc_unit is not None and exc_location is not None:
-                found: (dict | None) = activity_mapping.get(prep((exc_activity_name, exc_reference_product_name, exc_unit, exc_location))) 
-            
-            if found is not None:
-                migration_data += [(exc, found)]
-            else:
-                migration_data += [(exc, found)]
-            
-    return {(FROM["type"], FROM["code"]): TO for FROM, TO in migration_data}
+            if multiplier is None:
+                raise ValueError("Multiplier could not be retrieved, FROM_unit = '{}', TO_unit = '{}'".format(FROM["unit"], TO["unit"]))
+        
+        # Field one always specifies to which item the mapping should be applied.
+        one: list[str] = [FROM[n] for n in migration_dict["fields"]]
+        
+        # Field two always specifies the new data that should be applied to update the original data
+        two: dict = dict(**{str(o): str(TO[o]) for o in TO_fields}, **{"multiplier": multiplier})
+        
+        # Add to migration dictionary
+        migration_dict["data"] += [[one + ["technosphere"], two]]
+        migration_dict["data"] += [[one + ["substitution"], two]]
+    
+    migration_dict["fields"] += ("type",)
+    # unsuccessful: list[dict] = [m[0] for m in activity_migration_data.values() if m[1] is None]
+    # df_unsuccessful: pd.DataFrame = pd.DataFrame(unsuccessful)
+      
+    return migration_dict
         
 

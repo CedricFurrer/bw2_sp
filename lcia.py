@@ -1074,6 +1074,76 @@ def register_SimaPro_LCIA_methods(imported_methods: list,
     
 
 
+# Copied and adapted from the Brightway ecoinvent 'get_ecoinvent_release' function
+def import_XML_LCIA_methods(XML_LCIA_filepath: pathlib.Path,
+                            biosphere_db_name: str,
+                            ecoinvent_version: (str | None) = None):
+    
+    # hp.check_function_input_type(import_XML_LCIA_methods, locals())
+    dfs: dict = pd.read_excel(XML_LCIA_filepath, sheet_name = None)
+    units_mapping: dict = {(row["Method"], row["Category"], row["Indicator"]): row["Indicator Unit"] for idx, row in dfs["Indicators"].iterrows()}
+    
+    mapping: dict = {}
+    for flow in bw2data.Database(biosphere_db_name):
+        mapping[(flow["name"],) + tuple(flow["categories"])] = flow.key
+        
+        if flow["name"].startswith("[Deleted]"):
+            mapping[(flow["name"].replace("[Deleted]", ""),) + tuple(flow["categories"])] = flow.key
+    
+    def drop_unspecified(a: str, b: str, c: str) -> tuple:
+        if c.lower() == "unspecified":
+            return (a, b)
+        else:
+            return (a, b, c)
+    
+    lcia_data: dict = {}
+    for idx, row in dfs["CFs"].replace({float("NaN"): None}).iterrows():
+        impact_category: tuple[str, str, str] = (row["Method"], row["Category"], row["Indicator"])
+        
+        if row["CF"] is None:
+            continue
+        
+        if impact_category not in lcia_data:
+            lcia_data[impact_category]: list = []
+            
+        ID: (tuple[str, str], None) = mapping.get(drop_unspecified(row["Name"], row["Compartment"], row["Subcompartment"]))
+        
+        if ID is None:
+            raise ValueError("Could not find biosphere flow '{}' in biosphere '{}'".format(drop_unspecified(row["Name"], row["Compartment"], row["Subcompartment"]), biosphere_db_name))
+        
+        to_append: tuple[tuple[str, str], float] = (ID, float(row["CF"]))
+        lcia_data[impact_category] += [to_append]
+            
+    methods: list = []
+    for method_tuple, _ in lcia_data.items():
+        methods += [{"name": method_tuple,
+                     "unit": units_mapping.get(method_tuple, "Unknown"),
+                     "filepath": str(XML_LCIA_filepath),
+                     "ecoinvent_version": "ecoinvent version not indicated" if ecoinvent_version is None else ecoinvent_version,
+                     "database": biosphere_db_name,
+                     "exchanges": lcia_data[method_tuple]
+                     }]
+    
+    return methods
+
+# Copied and adapted from the Brightway ecoinvent 'get_ecoinvent_release' function
+def register_XML_LCIA_methods(methods: list) -> None:
+    
+    # hp.check_function_input_type(register_XML_LCIA_methods, locals())
+    for item in methods:
+        
+        if item["name"] in bw2data.methods:
+            del bw2data.methods[item["name"]]
+        
+        method = bw2data.Method(item["name"])
+        method.register(unit = item["unit"],
+                        filepath = item["filepath"],
+                        ecoinvent_version = item["ecoinvent_version"],
+                        database = item["database"]
+                        )
+        
+        method.write(item["exchanges"])
+        # print("Registered Brightway method '{}'".format(item["name"]))
     
 
 

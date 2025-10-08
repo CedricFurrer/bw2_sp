@@ -32,38 +32,11 @@ from defaults.units import (backward_unit_normalization_mapping)
 from defaults.model_type import (XML_TO_SIMAPRO_MODEL_TYPE_MAPPING,
                                  XML_TO_SIMAPRO_PROCESS_TYPE_MAPPING)
 
+from defaults.compartments import (SIMAPRO_PRODUCT_COMPARTMENTS,
+                                   SIMAPRO_TECHNOSPHERE_COMPARTMENTS,
+                                   SIMAPRO_CATEGORY_TYPE_COMPARTMENT_MAPPING)
+
 starting: str = "------------"
-
-
-# Exact names of compartments in CSV files from SimaPro
-SIMAPRO_PRODUCT_COMPARTMENTS = {"products": "Products"}
-
-SIMAPRO_SUBSTITUTION_COMPARTMENTS = {"avoided_products": "Avoided products"}
-
-SIMAPRO_TECHNOSPHERE_COMPARTMENTS = {"materials_fuels": "Materials/fuels",
-                                     "electricity_heat": "Electricity/heat",
-                                     "final_waste_flows": "Final waste flows",
-                                     "waste_to_treatment": "Waste to treatment"}
-
-SIMAPRO_BIOSPHERE_COMPARTMENTS = {"resources": "Resources",
-                                  "emissions_air": "Emissions to air",
-                                  "emissions_water": "Emissions to water",
-                                  "emissions_soil": "Emissions to soil",
-                                  "non_material_emissions": "Non material emissions",
-                                  "social_issues": "Social issues",
-                                  "economic_issues": "Economic issues"}
-
-SIMAPRO_COMPARTMENTS = dict(**SIMAPRO_PRODUCT_COMPARTMENTS,
-                            **SIMAPRO_SUBSTITUTION_COMPARTMENTS,
-                            **SIMAPRO_TECHNOSPHERE_COMPARTMENTS,
-                            **SIMAPRO_BIOSPHERE_COMPARTMENTS)
-
-SIMAPRO_CATEGORY_TYPE_COMPARTMENT_MAPPING = {"material": SIMAPRO_COMPARTMENTS["materials_fuels"],
-                                             "waste treatment": SIMAPRO_COMPARTMENTS["waste_to_treatment"],
-                                             "energy": SIMAPRO_COMPARTMENTS["electricity_heat"],
-                                             "processing": SIMAPRO_COMPARTMENTS["materials_fuels"],
-                                             "transport": SIMAPRO_COMPARTMENTS["materials_fuels"],
-                                             "use": SIMAPRO_COMPARTMENTS["materials_fuels"]}
 
 
 #%% LCI strategies
@@ -769,7 +742,11 @@ def create_migration_mapping(json_dict: dict):
     return tuple(json_dict["fields"]), mapping
 
 
-def apply_migration_mapping(db_var, fields: tuple, migration_mapping: dict):
+def apply_migration_mapping(db_var,
+                            fields: tuple,
+                            migration_mapping: dict,
+                            migrate_activities: bool,
+                            migrate_exchanges: bool):
     
     # Check function input type
     hp.check_function_input_type(apply_migration_mapping, locals())
@@ -782,100 +759,117 @@ def apply_migration_mapping(db_var, fields: tuple, migration_mapping: dict):
     n_ds: int = 0
     n_exc: int = 0
     
+    # Migration duplicate checker
+    dup_ds: dict = {}
+    dup_exc: dict = {}
+    
     # Loop through each element in the current database data (inventory)
     for ds in db_var:
         
-        # We try to find a suitable entry of the migration mapping for the current inventory
-        # If yes (= no key errors), we replace the values of the current inventory with the ones from the migration mapping
-        try:
-            # We first extract the respective information of the fields of the current inventory with which we search in the migration mapping
-            ds_ID = tuple([ds[m] for m in fields])
-            
-            # We check if we find a corresponding item in the migration mapping
-            map_to = migration_mapping[ds_ID]
-            
-            # If yes, we loop through each key/value pair
-            for ds_k_new, ds_v_new in map_to.items():
+        # Check if activities should be migrated
+        if migrate_activities:
+        
+            # We try to find a suitable entry of the migration mapping for the current inventory
+            # If yes (= no key errors), we replace the values of the current inventory with the ones from the migration mapping
+            try:
+                # We first extract the respective information of the fields of the current inventory with which we search in the migration mapping
+                ds_ID = tuple([ds[m] for m in fields])
                 
-                # If we find the 'multiplier', it is a bit special
-                # It is not a simple replacement, but we rather apply the multiplier to any 'amount' field
-                if ds_k_new == "multiplier":
+                # We check if we find a corresponding item in the migration mapping
+                map_to = migration_mapping[ds_ID]
+                
+                # If yes, we loop through each key/value pair
+                for ds_k_new, ds_v_new in map_to.items():
                     
-                    # We loop through all the amount fields (specified above) individually
-                    for amount_field_ds in amount_fields_ds:
+                    # If we find the 'multiplier', it is a bit special
+                    # It is not a simple replacement, but we rather apply the multiplier to any 'amount' field
+                    if ds_k_new == "multiplier":
                         
-                        # If it exists in the current dictionary, we update the field
-                        # We multiply the current value with the multiplier value
-                        if amount_field_ds in ds:
-                            ds[amount_field_ds] *= ds_v_new
+                        # We loop through all the amount fields (specified above) individually
+                        for amount_field_ds in amount_fields_ds:
                             
-                    continue
+                            # If it exists in the current dictionary, we update the field
+                            # We multiply the current value with the multiplier value
+                            if amount_field_ds in ds:
+                                ds[amount_field_ds] *= ds_v_new
+                                
+                        continue
+                        
+                    # We replace (or add if not existing) the values of the keys in the inventory
+                    ds[ds_k_new] = ds_v_new
                     
-                # We replace (or add if not existing) the values of the keys in the inventory
-                ds[ds_k_new] = ds_v_new
-                
-            # Increase counter
-            n_ds += 1
-                
-        except:
-            # If we encounter a key error, we go on.
-            # A key error means, there is either no corresponding item for the current inventory in the migration mapping
-            # or some of the fields are not present in the inventory
-            pass
+                # Increase counter
+                if dup_ds.get(ds_ID) is None:
+                    n_ds += 1
+                    dup_ds[ds_ID]: bool = True
+                    
+            except:
+                # If we encounter a key error, we go on.
+                # A key error means, there is either no corresponding item for the current inventory in the migration mapping
+                # or some of the fields are not present in the inventory
+                pass
         
         # We do the same as above also for the exchanges
         # Loop through each exchange of the current inventory
         for exc in ds["exchanges"]:
             
-            # We try to find a suitable entry of the migration mapping for the current exchange
-            # If yes (= no key errors), we replace the values of the current exchange with the ones from the migration mapping
-            try:
-                # We first extract the respective information of the fields of the current exchange with which we search in the migration mapping
-                exc_ID = tuple([exc[m] for m in fields])
-                
-                # We check if we find a corresponding item in the migration mapping
-                map_to = migration_mapping[exc_ID]
-                
-                # If yes, we loop through each key/value pair
-                for exc_k_new, exc_v_new in map_to.items():
+            # Check if exchanges should be migrated
+            if migrate_exchanges:
+            
+                # We try to find a suitable entry of the migration mapping for the current exchange
+                # If yes (= no key errors), we replace the values of the current exchange with the ones from the migration mapping
+                try:
+                    # We first extract the respective information of the fields of the current exchange with which we search in the migration mapping
+                    exc_ID = tuple([exc[m] for m in fields])
                     
-                    # If we find the 'multiplier', it is a bit special
-                    # It is not a simple replacement, but we rather apply the multiplier to any 'amount' field
-                    if exc_k_new == "multiplier":
+                    # We check if we find a corresponding item in the migration mapping
+                    map_to = migration_mapping[exc_ID]
+                    
+                    # If yes, we loop through each key/value pair
+                    for exc_k_new, exc_v_new in map_to.items():
                         
-                        # We loop through all the amount fields (specified above) individually
-                        for amount_field_exc in amount_fields_exc:
+                        # If we find the 'multiplier', it is a bit special
+                        # It is not a simple replacement, but we rather apply the multiplier to any 'amount' field
+                        if exc_k_new == "multiplier":
                             
-                            # If it exists in the current dictionary, we update the field
-                            # We multiply the current value with the multiplier value
-                            if amount_field_exc in exc:
-                                exc[amount_field_exc] *= exc_v_new
+                            # We loop through all the amount fields (specified above) individually
+                            for amount_field_exc in amount_fields_exc:
                                 
-                        # We need to update the negative key
-                        if "negative" in exc:
-                            exc["negative"] = exc["amount"] < 0
-                                
-                        continue
+                                # If it exists in the current dictionary, we update the field
+                                # We multiply the current value with the multiplier value
+                                if amount_field_exc in exc:
+                                    exc[amount_field_exc] *= exc_v_new
+                                    
+                            # We need to update the negative key
+                            if "negative" in exc:
+                                exc["negative"] = exc["amount"] < 0
+                                    
+                            continue
+                            
+                        # We replace (or add if not existing) the values of the keys in the exchange
+                        exc[exc_k_new] = exc_v_new
                         
-                    # We replace (or add if not existing) the values of the keys in the exchange
-                    exc[exc_k_new] = exc_v_new
-                    
-                # Increase counter
-                n_exc += 1
-                    
-            except:
-                # If we encounter a key error, we go on.
-                # A key error means, there is either no corresponding item for the current exchange in the migration mapping
-                # or some of the fields are not present in the exchange
-                pass
+                    # Increase counter
+                    if dup_exc.get(exc_ID) is None:
+                        n_exc += 1
+                        dup_exc[exc_ID]: bool = True
+                        
+                except:
+                    # If we encounter a key error, we go on.
+                    # A key error means, there is either no corresponding item for the current exchange in the migration mapping
+                    # or some of the fields are not present in the exchange
+                    pass
     
     # Print the amount of migrated ds and exc
-    print("Migrated {} inventories and {} exchanges".format(n_ds, n_exc))
+    print("Migrated {} unique inventories and {} unique exchanges".format(n_ds, n_exc))
             
     return db_var
 
 
-def migrate_from_json_file(db_var, json_migration_filepath: pathlib.Path | None = None):
+def migrate_from_json_file(db_var,
+                           migrate_activities: bool,
+                           migrate_exchanges: bool,
+                           json_migration_filepath: (pathlib.Path | None)):
     
     # Check function input type
     hp.check_function_input_type(migrate_from_json_file, locals())
@@ -900,12 +894,17 @@ def migrate_from_json_file(db_var, json_migration_filepath: pathlib.Path | None 
     # Apply migration
     new_db_var = apply_migration_mapping(db_var = db_var,
                                          fields = fields,
-                                         migration_mapping = migration_mapping)
+                                         migration_mapping = migration_mapping,
+                                         migrate_activities = migrate_activities,
+                                         migrate_exchanges = migrate_exchanges)
             
     return new_db_var
 
 
-def migrate_from_excel_file(db_var, excel_migration_filepath: pathlib.Path | None = None):
+def migrate_from_excel_file(db_var,
+                            migrate_activities: bool,
+                            migrate_exchanges: bool,
+                            excel_migration_filepath: (pathlib.Path | None)):
     
     # Check function input type
     hp.check_function_input_type(migrate_from_excel_file, locals())
@@ -926,7 +925,9 @@ def migrate_from_excel_file(db_var, excel_migration_filepath: pathlib.Path | Non
     # Apply migration
     new_db_var = apply_migration_mapping(db_var = db_var,
                                          fields = fields,
-                                         migration_mapping = migration_mapping)
+                                         migration_mapping = migration_mapping,
+                                         migrate_activities = migrate_activities,
+                                         migrate_exchanges = migrate_exchanges)
             
     return new_db_var
 
@@ -1006,6 +1007,7 @@ def modify_fields_to_SimaPro_standard(db_var,
         
         # Write new fields in SimaPro standard
         ds["activity_name"] = name
+        ds["reference_product_name"] = reference_product
         ds["name"] = reference_product[0].upper() + reference_product.lower()[1:] + " {{COUNTRY}}| " + name.lower() + " | " + XML_TO_SIMAPRO_MODEL_TYPE_MAPPING[model_type] + ", " + XML_TO_SIMAPRO_PROCESS_TYPE_MAPPING[process_type]
         ds["SimaPro_name"] = reference_product[0].upper() + reference_product.lower()[1:] + " {" + location + "}| " + name.lower() + " | " + XML_TO_SIMAPRO_MODEL_TYPE_MAPPING[model_type] + ", " + XML_TO_SIMAPRO_PROCESS_TYPE_MAPPING[process_type]
         ds["categories"]= SIMAPRO_CATEGORY_TYPE_COMPARTMENT_MAPPING["material"]
@@ -1014,7 +1016,9 @@ def modify_fields_to_SimaPro_standard(db_var,
         ds["synonyms"] = tuple(ds["synonyms"])
         ds["allocation"] = ds.get("properties", {}).get("allocation factor", {}).get("amount", 1)
         ds["output amount"] = float(ds["production amount"] * ds["allocation"])
-        ds["code"] = ds["activity"] + "_" + ds["flow"] 
+        ds["code"] = ds["activity"] + "_" + ds["flow"]
+        ds["reference_product_code"] = ds["flow"]
+        ds["activity_code"] = ds["activity"]
         
         # We try to backward normalize the ecoinvent unit to SimaPro standard
         try:
@@ -1071,7 +1075,7 @@ def modify_fields_to_SimaPro_standard(db_var,
             if exc["type"] == "production":
                 
                 # Similar to the 'properties' field above, we loop through specific fields that we have modified in 'ds' and update the fields in the production exchange.
-                fields = ["output amount", "activity_name", "name", "SimaPro_name", "categories", "SimaPro_categories", "unit", "SimaPro_unit", "location"]
+                fields = ["output amount", "activity_name", "reference_product_name", "activity_code", "reference_product_code", "name", "SimaPro_name", "categories", "SimaPro_categories", "unit", "SimaPro_unit", "location"]
                 
                 # Modify fields
                 for field in fields:
@@ -1146,6 +1150,9 @@ def modify_fields_to_SimaPro_standard(db_var,
     
     # Specify the fields that we need to add or adapt in technosphere and substitution exchanges
     fields_to_adapt_or_add_in_technosphere_and_substitution_exchanges = ["activity_name",
+                                                                         "reference_product_name",
+                                                                         "activity_code",
+                                                                         "reference_product_code",
                                                                          "name",
                                                                          "SimaPro_name",
                                                                          "categories",
@@ -1366,10 +1373,12 @@ def identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories(db_var,
     # Regex pattern to detoxify the SimaPro names
     # ecoinvent specific!
     pattern_to_detoxify_ecoinvent_name_used_in_SimaPro = ("^"
-                                                          "(?P<reference_product>.*)"
-                                                          "\{"
-                                                          "(?P<location>.*)"
-                                                          "\}"
+                                                          "(?P<reference_product>.*[^{}])"
+                                                          "(\{)?"
+                                                          "(\{)"
+                                                          "(?P<location>.*[^{}])"
+                                                          "(\})"
+                                                          "(\})?"
                                                           "\|"
                                                           "(?P<activity>.*)"
                                                           "\|"
@@ -1384,7 +1393,6 @@ def identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories(db_var,
         
         # Identify if one of the patterns specified appears in the SimaPro name
         # If yes, then we save the location of the character where the pattern starts
-        # ds_found: list[int] = [re.search(n.lower(), ds["SimaPro_name"].lower()).start() for n in cut_patterns if n.lower() in ds["SimaPro_name"].lower()] # !!! correct? REMOVE
         ds_found: list[int] = [re.search(n.lower(), ds["name"].lower()).start() for n in cut_patterns if n.lower() in ds["name"].lower()]
 
         # If we found the pattern, we now remove it
@@ -1396,10 +1404,9 @@ def identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories(db_var,
             # Use slicing to modify name
             # ds["new_name"] = ds["old_name"][:ending]
             ds["name"] = ds["name"][:ds_ending]
-            # ds["SimaPro_name"] = ds["SimaPro_name"][:ds_ending] # !!! REMOVE
         
         # Match pattern
-        ds_detoxified_name: (dict | None) = re.match(pattern_to_detoxify_ecoinvent_name_used_in_SimaPro , ds["SimaPro_name"])
+        ds_detoxified_name: (dict | None) = re.match(pattern_to_detoxify_ecoinvent_name_used_in_SimaPro , ds["name"])
         
         # Add key/value pairs to activity
         ds["reference_product_name"]: (str | None) = ds_detoxified_name.groupdict()["reference_product"].strip() if ds_detoxified_name is not None else None
@@ -1417,7 +1424,6 @@ def identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories(db_var,
             
             # Identify if one of the patterns specified appears in the SimaPro name
             # If yes, then we save the location of the character where the pattern starts
-            # exc_found: list[int] = [re.search(n.lower(), exc["SimaPro_name"].lower()).start() for n in cut_patterns if n.lower() in exc["SimaPro_name"].lower()]  # !!! correct? REMOVE
             exc_found: list[int] = [re.search(n.lower(), exc["name"].lower()).start() for n in cut_patterns if n.lower() in exc["name"].lower()]
             
             # If we found the pattern, we now remove it
@@ -1428,10 +1434,9 @@ def identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories(db_var,
                 
                 # Use slicing to modify name
                 exc["name"] = exc["name"][:exc_ending]
-                # exc["SimaPro_name"] = exc["SimaPro_name"][:exc_ending] # !!! REMOVE
             
             # Match pattern
-            exc_detoxified_name: (dict | None) = re.match(pattern_to_detoxify_ecoinvent_name_used_in_SimaPro , exc["SimaPro_name"])
+            exc_detoxified_name: (dict | None) = re.match(pattern_to_detoxify_ecoinvent_name_used_in_SimaPro , exc["name"])
             
             # Add key/value pairs to activity
             exc["reference_product_name"]: (str | None) = exc_detoxified_name.groupdict()["reference_product"].strip() if exc_detoxified_name is not None else None
@@ -1636,6 +1641,7 @@ def create_XML_biosphere_from_elmentary_exchanges_file(filepath_ElementaryExchan
 
     # We apply some strategies
     flow_data: list[dict] = ensure_categories_are_tuples(flow_data)
+    flow_data: list[dict] = bw2io.strategies.biosphere.drop_unspecified_subcategories(flow_data)
     flow_data: list[dict] = normalize_and_add_CAS_number(flow_data)
     flow_data: list[dict] = create_SimaPro_fields(flow_data, for_ds = True, for_exchanges = False)
     flow_data: list[dict] = normalize_simapro_biosphere_categories(flow_data)
@@ -1709,12 +1715,29 @@ def import_XML_LCI_inventories(XML_LCI_filepath: pathlib.Path,
     db.apply_strategy(normalize_and_add_CAS_number)
     db.apply_strategy(partial(assign_categories_from_XML_to_biosphere_flows,
                               biosphere_flows = xml_biosphere), verbose = verbose)
+    db.apply_strategy(bw2io.strategies.biosphere.drop_unspecified_subcategories) # !!! correct?
     db.apply_strategy(partial(add_top_and_subcategory_fields_for_biosphere_flows, remove_initial_category_field = False))
     db.apply_strategy(partial(modify_fields_to_SimaPro_standard,
                               model_type = db_model_type_name,
                               process_type = db_process_type_name), verbose = verbose)
     db.apply_strategy(add_GLO_to_biosphere_exchanges, verbose = verbose)
     db.apply_strategy(flip_sign_of_waste_flows)
+    
+    db.apply_strategy(partial(link.remove_linking,
+                              production_exchanges = True,
+                              substitution_exchanges = True,
+                              technosphere_exchanges = True,
+                              biosphere_exchanges = True), verbose = verbose)
+
+    db.apply_strategy(partial(link.link_activities_internally,
+                              production_exchanges = True,
+                              substitution_exchanges = True,
+                              technosphere_exchanges = True,
+                              relink = False,
+                              strip = False,
+                              case_insensitive = False,
+                              remove_special_characters = False,
+                              verbose = True), verbose = verbose)
     
     return db
     
