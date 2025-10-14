@@ -86,7 +86,8 @@ filepath_activity_migration_data: pathlib.Path = output_path / filename_activity
 filename_biosphere_flows_not_specified_in_XML_methods: str = "biosphere_flows_not_specified_in_LCIA_methods_from_XML.xlsx"
 
 # Other
-filename_SBERT_names_validated: str = "manually_checked_SBERT_names.xlsx"
+filename_SBERT_biosphere_names_validated: str = "manually_checked_SBERT_biosphere_names.xlsx"
+filename_SBERT_activity_names_validated: str = "manually_checked_SBERT_activity_names.xlsx"
 
 #%% Defaults for key variables
 biosphere_db_name_simapro: str = "biosphere3 - from SimaPro"
@@ -137,6 +138,7 @@ ecoinvent_db_simapro: bw2io.importers.base_lci.LCIImporter = import_SimaPro_LCI_
                                                                                             delimiter = "\t",
                                                                                             verbose = True)
 
+# Link flows
 ecoinvent_db_simapro.apply_strategy(partial(link.link_biosphere_flows_externally,
                                             biosphere_db_name = biosphere_db_name_simapro,
                                             biosphere_db_name_unlinked = unlinked_biosphere_db_name,
@@ -339,13 +341,20 @@ with open(output_path / ("biosphere_flows_from_SimaPro.json"), "w") as outfile:
 #%% Harmonize biospheres and create migration JSON
 
 # Load dataframe with manually checked biosphere flows
-manually_checked_SBERTs: pd.DataFrame = pd.read_excel(LCI_ecoinvent_xml_folderpath / filename_SBERT_names_validated)
+manually_checked_SBERT_biosphere_names: pd.DataFrame = pd.read_excel(LCI_ecoinvent_xml_folderpath / filename_SBERT_biosphere_names_validated)
 
 # Harmonize the two biospheres
-biosphere_migration_data: dict = create_harmonized_biosphere_migration(biosphere_flows_1 = biosphere_flows_from_XML_used,
-                                                                       biosphere_flows_2 = biosphere_flows_from_SimaPro,
-                                                                       manually_checked_SBERTs = manually_checked_SBERTs,
-                                                                       output_path = output_path)
+biosphere_harmonization: dict = create_harmonized_biosphere_migration(biosphere_flows_1 = biosphere_flows_from_XML_used,
+                                                                      biosphere_flows_2 = biosphere_flows_from_SimaPro,
+                                                                      manually_checked_SBERTs = manually_checked_SBERT_biosphere_names)
+
+# Write excels
+pd.DataFrame(biosphere_harmonization["successfully_migrated_biosphere_flows"]).to_excel(output_path / "biosphere_flows_successfully_migrated.xlsx")
+pd.DataFrame(biosphere_harmonization["unsuccessfully_migrated_biosphere_flows"]).to_excel(output_path / "biosphere_flows_unuccessfully_migrated.xlsx")
+pd.DataFrame(biosphere_harmonization["SBERT_to_map"]).to_excel(output_path / "biosphere_flows_SBERT_to_map.xlsx")
+
+# Retrieve the biosphere harmonization dictionary
+biosphere_migration_data: dict = biosphere_harmonization["biosphere_migration"]
 
 # Create the JSON object to be written
 biosphere_migration_data_in_json_format = json.dumps(biosphere_migration_data, indent = 3)
@@ -364,7 +373,9 @@ def remove_unused_biosphere_flows(db):
 # Apply strategy and remove unused flows
 ecoinvent_db_xml_migrated.apply_strategy(remove_unused_biosphere_flows)
 
-            
+# The amount of XML biosphere flows should be the same as in the statistics
+ecoinvent_db_xml_migrated.statistics()
+
 #%% Replace the XML code with the one from SimaPro
 def replace_XML_code_field_with_SimaPro_code(XML_db):
     
@@ -481,7 +492,6 @@ correspondence_mapping: list[dict] = create_correspondence_mapping(path_to_corre
                                                                    output_path = output_path)
 
 #%% Read Agribalyse again from SimaPro CSV files where we will then update the background
-
 agribalyse_db_updated_simapro: bw2io.importers.base_lci.LCIImporter = import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths = [LCI_agribalyse_simapro_folderpath / "AGB.CSV"],
                                                                                                      db_name = agribalyse_db_name_updated_simapro,
                                                                                                      encoding = "latin-1",
@@ -515,12 +525,21 @@ agribalyse_db_updated_simapro.apply_strategy(partial(link.remove_linking,
 #%% Create the activity migration --> all ecoinvent v3.8 found in the background from Agribalyse should be updated to ecoinvent v3.10, if possible
 agribalyse_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(agribalyse_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
 
-activity_migration_data: dict = create_harmonized_activity_migration(flows_1 = list(agribalyse_exchanges_to_migrate_to_ecoinvent.values()),
-                                                                     flows_2 = list(ecoinvent_db_xml_migrated),
-                                                                     correspondence_mapping = correspondence_mapping)
+# Load dataframe with manually checked activity flows
+manually_checked_SBERT_activity_names: pd.DataFrame = pd.read_excel(LCI_ecoinvent_xml_folderpath / filename_SBERT_activity_names_validated)
+
+activity_harmonization: dict = create_harmonized_activity_migration(flows_1 = list(agribalyse_exchanges_to_migrate_to_ecoinvent.values()),
+                                                                     flows_2 = list(bw2data.Database(ecoinvent_db_name_xml_migrated)),
+                                                                     manually_checked_SBERTs = manually_checked_SBERT_activity_names,
+                                                                     ecoinvent_correspondence_mapping = correspondence_mapping)
+
+# SBERT to map for activities
+pd.DataFrame(activity_harmonization["successfully_migrated_activity_flows"]).to_excel(output_path / "activity_flows_successfully_migrated.xlsx")
+pd.DataFrame(activity_harmonization["unsuccessfully_migrated_activity_flows"]).to_excel(output_path / "activity-flows_unuccessfully_migrated.xlsx")
+pd.DataFrame(activity_harmonization["SBERT_to_map"]).to_excel(output_path / "activity_flows_SBERT_to_map.xlsx")
 
 # Create the JSON object to be written
-activity_migration_data_in_json_format = json.dumps(activity_migration_data, indent = 3)
+activity_migration_data_in_json_format = json.dumps(activity_harmonization["activity_migration"], indent = 3)
 
 # Write the biosphere dictionary to a JSON file
 with open(filepath_activity_migration_data, "w") as outfile:
@@ -536,8 +555,7 @@ agribalyse_db_updated_simapro.apply_strategy(partial(migrate_from_json_file,
 
 # Link to ecoinvent externally
 agribalyse_db_updated_simapro.apply_strategy(partial(link.link_activities_externally,
-                                                     link_to_databases = (ecoinvent_db_name_simapro,),
-                                                     linking_order = None,
+                                                     link_to_databases = (ecoinvent_db_name_xml_migrated,),
                                                      link_production_exchanges = False,
                                                      link_substitution_exchanges = True,
                                                      link_technosphere_exchanges = True,
@@ -568,7 +586,7 @@ agribalyse_db_updated_simapro.statistics()
 print()
     
 # Write database
-print("\n-----------Write database: " + ecoinvent_db_name_xml)
+print("\n-----------Write database: " + agribalyse_db_updated_simapro)
 agribalyse_db_updated_simapro.write_database(overwrite = False)
 print()
 
@@ -593,18 +611,15 @@ for method in simapro_methods + ecoinvent_methods:
 if error:
     raise ValueError("Unregistered methods detected.")
 
+
+#%% Comparison 1
+
 # Extract all inventories
 # ... from ecoinvent (SimaPro)
 ecoinvent_simapro_inventories: list = [m for m in bw2data.Database(ecoinvent_db_name_simapro)]
 
 # ... from ecoinvent (XML)
 ecoinvent_xml_inventories: list = [m for m in bw2data.Database(ecoinvent_db_name_xml)]
-
-# ... from Agribalyse (SimaPro) with ecoinvent v3.8 background
-agribalyse_simapro_inventories: list = [m for m in bw2data.Database(agribalyse_db_name_simapro)]
-
-# ... from Agribalyse (SimaPro) with ecoinvent v3.10 background
-agribalyse_updated_simapro_inventories: list = [m for m in bw2data.Database(agribalyse_db_name_updated_simapro)]
 
 # Run LCA calculation
 LCA_results_ecoinvent_simapro: dict[str, pd.DataFrame] = run_LCA(activities = ecoinvent_simapro_inventories,
@@ -640,41 +655,6 @@ LCA_results_ecoinvent_xml: dict[str, pd.DataFrame] = run_LCA(activities = ecoinv
                                                              use_timestamp_in_filename = True,
                                                              print_progress_bar = True)
 
-# Run LCA calculation
-LCA_results_agribalyse_simapro: dict[str, pd.DataFrame] = run_LCA(activities = agribalyse_simapro_inventories,
-                                                                  methods = simapro_methods,
-                                                                  write_LCI_exchanges = False,
-                                                                  write_LCI_exchanges_as_emissions = False,
-                                                                  write_LCIA_impacts_of_activity_exchanges = False,
-                                                                  write_LCIA_process_contribution = False,
-                                                                  write_LCIA_emission_contribution = False,
-                                                                  write_characterization_factors = False,
-                                                                  cutoff_process = 0.001,
-                                                                  cutoff_emission = 0.001,
-                                                                  write_results_to_file = True,
-                                                                  local_output_path = output_path,
-                                                                  filename_without_ending = "agribalyse_SimaPro",
-                                                                  use_timestamp_in_filename = True,
-                                                                  print_progress_bar = True)
-
-# Run LCA calculation
-LCA_results_agribalyse_updated_simapro: dict[str, pd.DataFrame] = run_LCA(activities = agribalyse_updated_simapro_inventories,
-                                                                          methods = simapro_methods,
-                                                                          write_LCI_exchanges = False,
-                                                                          write_LCI_exchanges_as_emissions = False,
-                                                                          write_LCIA_impacts_of_activity_exchanges = False,
-                                                                          write_LCIA_process_contribution = False,
-                                                                          write_LCIA_emission_contribution = False,
-                                                                          write_characterization_factors = False,
-                                                                          cutoff_process = 0.001,
-                                                                          cutoff_emission = 0.001,
-                                                                          write_results_to_file = True,
-                                                                          local_output_path = output_path,
-                                                                          filename_without_ending = "agribalyse_updated_SimaPro",
-                                                                          use_timestamp_in_filename = True,
-                                                                          print_progress_bar = True)
-
-
 ecoinvent_xml_code_to_simapro_code_mapping: dict = {m["activity_code"] + "_" + m["reference_product_code"]: m["code"] for m in ecoinvent_simapro_inventories if m["activity_code"] is not None and m["reference_product_code"] is not None}
 
 for m in LCA_results_ecoinvent_xml["LCIA_activity_scores"]:
@@ -700,9 +680,56 @@ LCIA_mapping: dict = {('EF v3.1', 'climate change', 'global warming potential (G
 df_1["Method_standardized"] = [LCIA_mapping.get(m, "") for m in list(df_1["Method"])]
 df_1.query("Method_standardized != ''").to_excel(output_path / "comparison_ecoinvent_SimaPro_filtered.xlsx")
 
+#%% Comparison 2
+
+# Extract all inventories
+# ... from Agribalyse (SimaPro) with ecoinvent v3.8 background
+agribalyse_simapro_inventories: list = [m for m in bw2data.Database(agribalyse_db_name_simapro)]
+
+# ... from Agribalyse (SimaPro) with ecoinvent v3.10 background
+agribalyse_updated_simapro_inventories: list = [m for m in bw2data.Database(agribalyse_db_name_updated_simapro)]
+
+# Run LCA calculation
+LCA_results_agribalyse_simapro: dict[str, pd.DataFrame] = run_LCA(activities = agribalyse_simapro_inventories,
+                                                                  methods = simapro_methods,
+                                                                  write_LCI_exchanges = False,
+                                                                  write_LCI_exchanges_as_emissions = False,
+                                                                  write_LCIA_impacts_of_activity_exchanges = False,
+                                                                  write_LCIA_process_contribution = False,
+                                                                  write_LCIA_emission_contribution = False,
+                                                                  write_characterization_factors = False,
+                                                                  cutoff_process = 0.001,
+                                                                  cutoff_emission = 0.001,
+                                                                  write_results_to_file = True,
+                                                                  local_output_path = output_path,
+                                                                  filename_without_ending = "agribalyse_SimaPro",
+                                                                  use_timestamp_in_filename = True,
+                                                                  print_progress_bar = True)
+
+# Run LCA calculation
+LCA_results_agribalyse_updated_simapro: dict[str, pd.DataFrame] = run_LCA(activities = agribalyse_updated_simapro_inventories,
+                                                                          methods = ecoinvent_methods,
+                                                                          write_LCI_exchanges = False,
+                                                                          write_LCI_exchanges_as_emissions = False,
+                                                                          write_LCIA_impacts_of_activity_exchanges = False,
+                                                                          write_LCIA_process_contribution = False,
+                                                                          write_LCIA_emission_contribution = False,
+                                                                          write_characterization_factors = False,
+                                                                          cutoff_process = 0.001,
+                                                                          cutoff_emission = 0.001,
+                                                                          write_results_to_file = True,
+                                                                          local_output_path = output_path,
+                                                                          filename_without_ending = "agribalyse_updated_SimaPro",
+                                                                          use_timestamp_in_filename = True,
+                                                                          print_progress_bar = True)
+
+df_2: pd.DataFrame = pd.DataFrame(LCA_results_agribalyse_simapro["LCIA_activity_scores"] + LCA_results_agribalyse_updated_simapro["LCIA_activity_scores"])
+df_2.to_csv(output_path / "comparison_agribalyse_updated_background.csv")
+
+df_2["Method_standardized"] = [LCIA_mapping.get(m, "") for m in list(df_2["Method"])]
+df_2.query("Method_standardized != ''").to_excel(output_path / "comparison_agribalyse_updated_background_filtered.xlsx")
 
 #%% Build a random inventory with the builder
-
 tech_exchange: dict = create_base_exchange(exc_name = "test exchange",
                                            exc_SimaPro_name = "text exchange {GLO}",
                                            exc_cat = ("energy",),
@@ -743,7 +770,7 @@ inv: dict = create_base_inventory(inv_name = "test inventory",
 
 
 #%% Export inventories to SimaPro CSV
-SimaPro_CSV_text_block: str = export_SimaPro_CSV(list_of_Brightway2_pewee_objects = ecoinvent_simapro_inventories[1:10],
+SimaPro_CSV_text_block: str = export_SimaPro_CSV(list_of_Brightway2_pewee_objects = ecoinvent_simapro_inventories[10:20],
                                                  folder_path_SimaPro_CSV = output_path,
                                                  file_name_SimaPro_CSV_without_ending = "10_exported_SimaPro_inventories",
                                                  file_name_print_timestamp = True,
@@ -754,56 +781,4 @@ SimaPro_CSV_text_block: str = export_SimaPro_CSV(list_of_Brightway2_pewee_object
                                                  date_separator = ".",
                                                  short_date_format = "dd.MM.yyyy")
 
-#%%
-# import re
-# string: str = "Waste paperboard {COUNTRY}| treatment of, inert material landfill | Cut-off, S"
-
-# pattern_to_detoxify_ecoinvent_name_used_in_SimaPro = ("^"
-#                                                       "(?P<reference_product>.*[^{}])"
-#                                                       "(\{)?"
-#                                                       "(\{)"
-#                                                       "(?P<location>.*[^{}])"
-#                                                       "(\})"
-#                                                       "(\})?"
-#                                                       "\|"
-#                                                       "(?P<activity>.*)"
-#                                                       "\|"
-#                                                       "( )?"
-#                                                       "(?P<system_model>[A-Za-z\-]+)"
-#                                                       "(\, | |\,)??"
-#                                                       "(?P<process_type>(u|U|s|S))??"
-#                                                       "$")
-
-
-# matched: re.match = re.match(pattern_to_detoxify_ecoinvent_name_used_in_SimaPro, string)
-# print(matched.groupdict())
-
-#%%
-# mets: list[tuple] = [m for m in bw2data.methods][1:5]
-# invs: list[bw2data.backends.proxies.Activity] = [m for m in bw2data.Database(ecoinvent_db_name_simapro)][1:5]
-
-# calculation: LCA_Calculation = LCA_Calculation(activities = invs,
-#                                                methods = mets,
-#                                                functional_amount = 1.5,
-#                                                cut_off_percentage = None,
-#                                                exchange_level = 1,
-#                                                print_progress_bar = True)
-
-# calculation.calculate_all()
-# calculation.calculate_LCIA_scores()
-# calculation.extract_LCI_exchanges(exchange_level = 3)
-# calculation.calculate_LCIA_scores_of_exchanges(exchange_level = 2)
-# calculation.extract_LCI_emission_contribution()
-# calculation.extract_LCI_process_contribution()
-# calculation.calculate_LCIA_emission_contribution()
-# calculation.calculate_LCIA_process_contribution()
-# calculation.extract_characterization_factors()
-# results_dict_cleaned = calculation.get_result_dictionaries(True)
-# results_dict_not_cleaned = calculation.get_result_dictionaries(False)
-# results_df_cleaned = calculation.get_result_dataframes(True)
-# results_df_not_cleaned = calculation.get_result_dataframes(False)
-
-# calculation.write_results(path = output_path,
-#                           filename = "LCA_calculation_esults",
-#                           use_timestamp_in_filename = True)
 
