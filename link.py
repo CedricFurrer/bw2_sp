@@ -6,7 +6,6 @@ if __name__ == "__main__":
 
 import bw2io
 import bw2data
-import utils
 import helper as hp
 
 #%%
@@ -198,7 +197,6 @@ def link_biosphere_flows_externally(db_var,
 # Externally means, inventories and flows are linked with data from other already registered databases
 def link_activities_externally(db_var,
                                link_to_databases: tuple,
-                               linking_order: (tuple | None),
                                link_production_exchanges: bool,
                                link_substitution_exchanges: bool,
                                link_technosphere_exchanges: bool,
