@@ -181,10 +181,14 @@ def add_unlinked_flows_to_biosphere_database(db: bw2io.importers.base_lci.LCIImp
 
 #%% A function that uses the SBERT model to find the best match from a list
 
-def map_using_SBERT(items_to_map: tuple, items_to_map_to: tuple, max_number: int = 1):
+def map_using_SBERT(items_to_map: tuple, items_to_map_to: tuple, max_number: int = 1) -> pd.DataFrame:
     
     # Check function input type
     hp.check_function_input_type(map_using_SBERT, locals())
+    
+    # Raise error if max number is lower than 1
+    if max_number < 1:
+        raise ValueError("'max_number' argument needs to be greater or equal than 1 but currently is '{}'".format(max_number))
     
     # Path to where model might lay
     path: pathlib.Path = pathlib.Path(__file__).parent / "defaults" / "all-MiniLM-L6-v2"
@@ -198,14 +202,14 @@ def map_using_SBERT(items_to_map: tuple, items_to_map_to: tuple, max_number: int
         model = SentenceTransformer("all-MiniLM-L6-v2")
 
     # Compute embedding for both lists
-    embeddings1 = model.encode(items_to_map, convert_to_tensor=True)
-    embeddings2 = model.encode(items_to_map_to, convert_to_tensor=True)
+    embeddings1 = model.encode(items_to_map, convert_to_tensor = True)
+    embeddings2 = model.encode(items_to_map_to, convert_to_tensor = True)
 
     # Compute cosine-similarities
     cosine_scores = util.cos_sim(embeddings1, embeddings2)
 
     # Initialize variable
-    data = []
+    data: list = []
 
     # Loop through each item from 'items_to_map' and extract the elements that were mapped to it with its respective cosine score
     for idx_I, scores_tensor in enumerate(cosine_scores):
