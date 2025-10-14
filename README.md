@@ -1,1 +1,1 @@
-# bw2_sp
+# bw2_spThis repository depends on the Brightway v2 package and contains functions to facilitate the work with SimaPro LCI and LCIA data.
