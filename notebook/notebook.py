@@ -781,4 +781,12 @@ SimaPro_CSV_text_block: str = export_SimaPro_CSV(list_of_Brightway2_pewee_object
                                                  date_separator = ".",
                                                  short_date_format = "dd.MM.yyyy")
 
+#%%
+for method_name, _ in LCIA_mapping.items():
+    method = bw2data.Method(method_name).load()
+    print(str(len(method)) + " char. factors, " + str(method_name))
+    print()
+
+
+
 
