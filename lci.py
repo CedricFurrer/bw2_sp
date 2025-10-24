@@ -40,6 +40,28 @@ starting: str = "------------"
 
 
 #%% LCI strategies
+def change_database_name(db_var,
+                         new_database_name: str,
+                         list_of_types: list = ["production"]):
+    
+    # Make variable check
+    hp.check_function_input_type(change_database_name, locals())
+    
+    # Loop through each inventory
+    for ds in db_var:
+        
+        # Rename
+        ds["database"] = new_database_name
+        
+        # Loop through each exchange of that inventory
+        for exc in ds["exchanges"]:
+            
+            # Rename
+            if exc["type"] in list_of_types:
+                exc["database"] = new_database_name
+                
+    return db_var
+
 def change_database_name_and_remove_code(db_var,
                                          new_database_name: str,
                                          list_of_types: list = ["production"]):
@@ -66,6 +88,51 @@ def change_database_name_and_remove_code(db_var,
                 
     return db_var
 
+
+def select_inventory_using_regex(db_var, exclude: bool, include: bool, patterns: list, case_sensitive: bool = True):
+    
+    # Check function input type
+    hp.check_function_input_type(select_inventory_using_regex, locals())
+    
+    # Raise error if exlude and include was both specified. This is not possible
+    if exclude and include:
+        raise ValueError("Parameters 'include' and 'exclude' can not be True at the same time. It is only possible to either exlude or include.")
+    
+    # If exlude nor include was specified, just return the database in its original state
+    if not exclude and not include:
+        return db_var
+    
+    # We also return the database if no patterns were specified, because selecting does not make sense without a pattern
+    if patterns == []:
+        return db_var
+    
+    # Merge the different patterns to a string
+    pattern_string = "|".join([str(m) for m in patterns]).lower()
+    
+    # Initialize a new list to store the new inventories to
+    new_db_var = []
+    
+    # Loop through each inventory and select whether to in- or exlude it based on patterns
+    for ds in db_var:
+        
+        # Check if the pattern is contained in the SimaPro name
+        contained = bool(re.search(pattern_string, ds["SimaPro_name"].lower()))
+        
+        # Remove, if specified and the pattern is contained
+        if contained and exclude:
+            continue
+        
+        # Otherwise, if the pattern is not contained, we keep the inventory (by adding it to the new list)
+        elif not contained and exclude:
+            new_db_var += [ds]
+            continue
+        
+        # If the pattern is contained and we want to include the pattern, write the dataset to the new list
+        elif contained and include:
+            new_db_var += [ds]
+            continue
+            
+    return new_db_var
 
 
 def extract_geography_from_SimaPro_name(db_var,
