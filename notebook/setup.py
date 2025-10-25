@@ -456,6 +456,7 @@ agrifootprint_db_simapro.write_database()
 # Free up memory
 del agrifootprint_db_simapro
 
+
 #%% Run LCA calculation
 
 # Methods to use for the LCA calculation
