@@ -259,7 +259,7 @@ salca_db_simapro.apply_strategy(partial(select_inventory_using_regex,
 
 # Rename the database of the activities and the production exchanges
 salca_db_simapro.apply_strategy(partial(change_database_name,
-                                        new_database_name = salca_db_name_simapro,
+                                        new_db_name = salca_db_name_simapro,
                                         ))
 
 salca_db_simapro.apply_strategy(partial(migrate_from_excel_file,
