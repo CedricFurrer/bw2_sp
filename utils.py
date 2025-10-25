@@ -225,4 +225,66 @@ def map_using_SBERT(items_to_map: tuple, items_to_map_to: tuple, max_number: int
 
     return pd.DataFrame(data)
 
+#%% Functions to change database names and create copies of databases
+def change_database_name(db_var,
+                         new_db_name: str):
+    
+    # Make variable check
+    hp.check_function_input_type(change_database_name, locals())
+    
+    # Loop through each inventory
+    for ds in db_var:
+        
+        # Save old database name
+        old_db_name: str = ds["database"]
+        
+        # Rename
+        ds["database"]: str = new_db_name
+        
+        # Loop through each exchange of that inventory
+        for exc in ds["exchanges"]:
+            
+            # Add database key to production exchange
+            if exc["type"] == "production":
+                exc["database"]: str = new_db_name
+            
+            # Update the input field with the new database name, if available
+            if "input" in exc:
+                if exc["input"][0] == old_db_name:
+                    exc["input"]: tuple[str, str] = (new_db_name, exc["input"][1])
+            
+            # Delete the output field, if available
+            try: del exc["output"]
+            except: pass
+                
+    return db_var
+
+
+def copy_brightway_database(db_name: str,
+                            new_db_name: str) -> bw2io.importers.base_lci.LCIImporter:
+    
+    # Make variable check
+    hp.check_function_input_type(copy_brightway_database, locals())
+    
+    # Check if the database that we want to copy is registered in Brightway. If not, raise error
+    if db_name not in bw2data.databases:
+        raise ValueError("Database '{}' is not registered in the Brightway background and can therefore not be copied. Available databases are:\n{}".format(db_name, bw2data.databases))
+        
+    # Check if a database is already existing with the new name. If yes, we can not register a database with the new name and need to raise an error.
+    if new_db_name in bw2data.databases:
+        raise ValueError("New database name '{}' can not be used because a database with this name already exists in Brightway. Use another name.".format(new_db_name))
+    
+    # Load data from the database and make a deepcopy
+    db: list[dict] = [{**act.as_dict(), **{"exchanges": [exc.as_dict() for exc in act.exchanges()]}} for act in bw2data.Database(db_name)]
+    copied: list[dict] = copy.deepcopy(db)
+    
+    # As brightway importer object
+    db_as_obj: bw2io.importers.base_lci.LCIImporter = bw2io.importers.base_lci.LCIImporter(new_db_name)
+    db_as_obj.data: list[dict] = copied
+    
+    # Change database name
+    db_as_obj.apply_strategy(partial(change_database_name,
+                                     new_db_name = new_db_name))
+    
+    return db_as_obj
     
