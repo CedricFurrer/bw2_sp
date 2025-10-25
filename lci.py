@@ -40,54 +40,6 @@ starting: str = "------------"
 
 
 #%% LCI strategies
-# def change_database_name(db_var,
-#                          new_database_name: str,
-#                          list_of_types: list = ["production"]):
-    
-#     # Make variable check
-#     hp.check_function_input_type(change_database_name, locals())
-    
-#     # Loop through each inventory
-#     for ds in db_var:
-        
-#         # Rename
-#         ds["database"] = new_database_name
-        
-#         # Loop through each exchange of that inventory
-#         for exc in ds["exchanges"]:
-            
-#             # Rename
-#             if exc["type"] in list_of_types:
-#                 exc["database"] = new_database_name
-                
-#     return db_var
-
-# def change_database_name_and_remove_code(db_var,
-#                                          new_database_name: str,
-#                                          list_of_types: list = ["production"]):
-    
-#     # Make variable check
-#     hp.check_function_input_type(change_database_name_and_remove_code, locals())
-    
-#     # Loop through each inventory
-#     for ds in db_var:
-        
-#         # Rename
-#         ds["database"] = new_database_name
-        
-#         # Delete existing code
-#         try: del ds["code"]
-#         except: pass
-        
-#         # Loop through each exchange of that inventory
-#         for exc in ds["exchanges"]:
-            
-#             # Rename
-#             if exc["type"] in list_of_types:
-#                 exc["database"] = new_database_name
-                
-#     return db_var
-
 
 def select_inventory_using_regex(db_var, exclude: bool, include: bool, patterns: list, case_sensitive: bool = True):
     
