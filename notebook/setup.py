@@ -20,10 +20,10 @@ from lcia import (import_SimaPro_LCIA_methods,
 
 from lci import (import_SimaPro_LCI_inventories,
                  migrate_from_excel_file,
-                 select_inventory_using_regex,
-                 change_database_name)
+                 select_inventory_using_regex)
 
-from utils import (change_brightway_project_directory)
+from utils import (change_brightway_project_directory,
+                   change_database_name)
 from calculation import run_LCA
 from exporter import export_SimaPro_CSV
 
