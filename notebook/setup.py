@@ -38,9 +38,9 @@ LCI_salca_simapro_folderpath: pathlib.Path = here.parent / "data" / "lci" / "SAL
 LCIA_SimaPro_CSV_folderpath: pathlib.Path = here.parent / "data" / "lcia" / "fromSimaPro"
 
 # Generic and Brightway
-project_path: pathlib.Path = here / "notebook_data"
+project_path: pathlib.Path = here / "Brightway_projects"
 project_path.mkdir(exist_ok = True)
-project_name: str = "notebook"
+project_name: str = "Food databases"
 
 #%% Change brightway project directory and setup project
 change_brightway_project_directory(project_path)
@@ -61,7 +61,7 @@ biosphere_db_name_simapro: str = "biosphere3 - from SimaPro"
 unlinked_biosphere_db_name: str = biosphere_db_name_simapro + " - unlinked"
 ecoinvent_db_name_simapro: str = "ecoinvent v3.10 - SimaPro"
 agribalyse_db_name_simapro: str = "Agribalyse v3.1 - SimaPro"
-agrifootprint_db_name_simapro: str = "AgriFootprint v6.0 - SimaPro"
+agrifootprint_db_name_simapro: str = "AgriFootprint v6.3 - SimaPro"
 wfldb_db_name_simapro: str = "World Food LCA Database v3.5 - SimaPro"
 salca_db_name_simapro: str = "SALCA Database v3.10"
 
@@ -174,7 +174,8 @@ ecoinvent_db_simapro.apply_strategy(partial(migrate_from_excel_file,
                                     verbose = True)
 
 # Make a deepcopy to use for importing SALCA inventories
-salca_db_simapro: bw2io.importers.base_lci.LCIImporter = copy.deepcopy(ecoinvent_db_simapro)
+salca_db_simapro: bw2io.importers.base_lci.LCIImporter = bw2io.importers.base_lci.LCIImporter(salca_db_name_simapro)
+salca_db_simapro.data: list[dict] = copy.deepcopy(ecoinvent_db_simapro.data)
 
 # Specific patterns that are used to identify the SALCA inventories
 SALCA_patterns: list[str] = [
@@ -542,7 +543,7 @@ LCA_results_salca_simapro: dict[str, pd.DataFrame] = run_LCA(activities = salca_
                                                              print_progress_bar = True)
 
 # Extract all inventories
-# ... from Agrifootprint v6.0 (SimaPro) with ecoinvent v3.8 background
+# ... from Agrifootprint v6.3 (SimaPro) with ecoinvent v3.8 background
 agrifootprint_simapro_inventories: list = [m for m in bw2data.Database(agrifootprint_db_name_simapro)]
 
 # Run LCA calculation
@@ -595,9 +596,4 @@ SimaPro_CSV_text_block: str = export_SimaPro_CSV(list_of_Brightway2_pewee_object
                                                  decimal_separator = ".",
                                                  date_separator = ".",
                                                  short_date_format = "dd.MM.yyyy")
-
-# !!! Why do certain activities do not have an allocation key in the production exchange?
-see = [{**m.as_dict(), **{"exchanges": [n.as_dict() for n in m.exchanges()]}} for m in ecoinvent_simapro_inventories[10:20]]
-
-
 
