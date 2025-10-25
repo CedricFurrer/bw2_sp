@@ -528,12 +528,6 @@ def add_allocation_field(db_var):
     # Loop through each inventory
     for ds in db_var:
         
-        # For waste treatments, unfortunately no allocation is specified
-        # We assume that there is always only one product and therefore the allocation is 1.
-        if ds["SimaPro_categories"] == (SIMAPRO_TECHNOSPHERE_COMPARTMENTS["waste_to_treatment"],):
-            ds["allocation"]: float = float(1)
-            continue
-        
         # Initialize a list to store all allocation factors
         allocations: list = []
         
@@ -542,6 +536,11 @@ def add_allocation_field(db_var):
             
             # Check if current exchange is of type production
             if exc["type"] == "production":
+                
+                # For waste treatments, unfortunately no allocation is specified
+                # We assume that there is always only one product and therefore the allocation is 100%.
+                if ds["SimaPro_categories"] == (SIMAPRO_TECHNOSPHERE_COMPARTMENTS["waste_to_treatment"],):
+                    exc["allocation"]: float = float(100)
                 
                 # Extract allocation
                 allocation: (float | None) = exc.get("allocation")
