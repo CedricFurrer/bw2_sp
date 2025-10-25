@@ -29,13 +29,13 @@ from lci import (unregionalize_biosphere,
                  create_XML_biosphere_from_LCI
                  )
 
-from setup import (biosphere_db_name_simapro,
-                   unlinked_biosphere_db_name,
-                   ecoinvent_db_name_simapro,
-                   agribalyse_db_name_simapro,
-                   agrifootprint_db_name_simapro,
-                   wfldb_db_name_simapro,
-                   salca_db_name_simapro)
+from notebook.setup import (biosphere_db_name_simapro,
+                            unlinked_biosphere_db_name,
+                            ecoinvent_db_name_simapro,
+                            agribalyse_db_name_simapro,
+                            agrifootprint_db_name_simapro,
+                            wfldb_db_name_simapro,
+                            salca_db_name_simapro)
 
 from harmonization import (create_harmonized_biosphere_migration,
                            create_harmonized_activity_migration,
