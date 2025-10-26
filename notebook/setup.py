@@ -11,7 +11,6 @@ import utils
 import bw2io
 import bw2data
 import link
-import pandas as pd
 from functools import partial
 from lcia import (import_SimaPro_LCIA_methods,
                   register_biosphere,
@@ -24,7 +23,7 @@ from lci import (import_SimaPro_LCI_inventories,
 
 from utils import (change_brightway_project_directory,
                    change_database_name)
-from calculation import run_LCA
+from calculation_bw2 import LCA_Calculation
 from exporter import export_SimaPro_CSV
 
 #%% File- and folderpaths, key variables
@@ -484,105 +483,85 @@ if error:
 ecoinvent_simapro_inventories: list = [m for m in bw2data.Database(ecoinvent_db_name_simapro)]
 
 # Run LCA calculation
-LCA_results_ecoinvent_simapro: dict[str, pd.DataFrame] = run_LCA(activities = ecoinvent_simapro_inventories,
-                                                                 methods = simapro_methods,
-                                                                 write_LCI_exchanges = False,
-                                                                 write_LCI_exchanges_as_emissions = False,
-                                                                 write_LCIA_impacts_of_activity_exchanges = False,
-                                                                 write_LCIA_process_contribution = False,
-                                                                 write_LCIA_emission_contribution = False,
-                                                                 write_characterization_factors = False,
-                                                                 cutoff_process = 0.001,
-                                                                 cutoff_emission = 0.001,
-                                                                 write_results_to_file = True,
-                                                                 local_output_path = output_path,
-                                                                 filename_without_ending = "ecoinvent_SimaPro",
-                                                                 use_timestamp_in_filename = True,
-                                                                 print_progress_bar = True)
+lca_calculation_ecoinvent: LCA_Calculation = LCA_Calculation(activities = ecoinvent_simapro_inventories,
+                                                             methods = simapro_methods,
+                                                             functional_amount = 1,
+                                                             cut_off_percentage = 0.001,
+                                                             exchange_level = 1,
+                                                             print_progress_bar = True)
+lca_calculation_ecoinvent.calculate_LCIA_scores()
+lca_calculation_ecoinvent.write_results(path = output_path,
+                                        filename = "ecoinvent_SimaPro",
+                                        use_timestamp_in_filename = False,
+                                        clean = True)
 
 # Extract all inventories
 # ... from Agribalyse v3.1 (SimaPro) with ecoinvent v3.8 background
 agribalyse_simapro_inventories: list = [m for m in bw2data.Database(agribalyse_db_name_simapro)]
 
 # Run LCA calculation
-LCA_results_agribalyse_simapro: dict[str, pd.DataFrame] = run_LCA(activities = agribalyse_simapro_inventories,
-                                                                  methods = simapro_methods,
-                                                                  write_LCI_exchanges = False,
-                                                                  write_LCI_exchanges_as_emissions = False,
-                                                                  write_LCIA_impacts_of_activity_exchanges = False,
-                                                                  write_LCIA_process_contribution = False,
-                                                                  write_LCIA_emission_contribution = False,
-                                                                  write_characterization_factors = False,
-                                                                  cutoff_process = 0.001,
-                                                                  cutoff_emission = 0.001,
-                                                                  write_results_to_file = True,
-                                                                  local_output_path = output_path,
-                                                                  filename_without_ending = "agribalyse_SimaPro",
-                                                                  use_timestamp_in_filename = True,
-                                                                  print_progress_bar = True)
+lca_calculation_agribalyse: LCA_Calculation = LCA_Calculation(activities = agribalyse_simapro_inventories,
+                                                             methods = simapro_methods,
+                                                             functional_amount = 1,
+                                                             cut_off_percentage = 0.001,
+                                                             exchange_level = 1,
+                                                             print_progress_bar = True)
+lca_calculation_agribalyse.calculate_LCIA_scores()
+lca_calculation_agribalyse.write_results(path = output_path,
+                                         filename = "agribalyse_SimaPro",
+                                         use_timestamp_in_filename = False,
+                                         clean = True)
 
 # Extract all inventories
 # ... from SALCA v3.10 (SimaPro) with ecoinvent v3.10 background
 salca_simapro_inventories: list = [m for m in bw2data.Database(salca_db_name_simapro)]
 
 # Run LCA calculation
-LCA_results_salca_simapro: dict[str, pd.DataFrame] = run_LCA(activities = salca_simapro_inventories,
-                                                             methods = simapro_methods,
-                                                             write_LCI_exchanges = False,
-                                                             write_LCI_exchanges_as_emissions = False,
-                                                             write_LCIA_impacts_of_activity_exchanges = False,
-                                                             write_LCIA_process_contribution = False,
-                                                             write_LCIA_emission_contribution = False,
-                                                             write_characterization_factors = False,
-                                                             cutoff_process = 0.001,
-                                                             cutoff_emission = 0.001,
-                                                             write_results_to_file = True,
-                                                             local_output_path = output_path,
-                                                             filename_without_ending = "salca_SimaPro",
-                                                             use_timestamp_in_filename = True,
-                                                             print_progress_bar = True)
+lca_calculation_salca: LCA_Calculation = LCA_Calculation(activities = salca_simapro_inventories,
+                                                         methods = simapro_methods,
+                                                         functional_amount = 1,
+                                                         cut_off_percentage = 0.001,
+                                                         exchange_level = 1,
+                                                         print_progress_bar = True)
+lca_calculation_salca.calculate_LCIA_scores()
+lca_calculation_salca.write_results(path = output_path,
+                                    filename = "salca_SimaPro",
+                                    use_timestamp_in_filename = False,
+                                    clean = True)
 
 # Extract all inventories
 # ... from Agrifootprint v6.3 (SimaPro) with ecoinvent v3.8 background
 agrifootprint_simapro_inventories: list = [m for m in bw2data.Database(agrifootprint_db_name_simapro)]
 
 # Run LCA calculation
-LCA_results_agrifootprint_simapro: dict[str, pd.DataFrame] = run_LCA(activities = agrifootprint_simapro_inventories,
-                                                             methods = simapro_methods,
-                                                             write_LCI_exchanges = False,
-                                                             write_LCI_exchanges_as_emissions = False,
-                                                             write_LCIA_impacts_of_activity_exchanges = False,
-                                                             write_LCIA_process_contribution = False,
-                                                             write_LCIA_emission_contribution = False,
-                                                             write_characterization_factors = False,
-                                                             cutoff_process = 0.001,
-                                                             cutoff_emission = 0.001,
-                                                             write_results_to_file = True,
-                                                             local_output_path = output_path,
-                                                             filename_without_ending = "agrifootprint_SimaPro",
-                                                             use_timestamp_in_filename = True,
-                                                             print_progress_bar = True)
+lca_calculation_agrifootprint: LCA_Calculation = LCA_Calculation(activities = agrifootprint_simapro_inventories,
+                                                                 methods = simapro_methods,
+                                                                 functional_amount = 1,
+                                                                 cut_off_percentage = 0.001,
+                                                                 exchange_level = 1,
+                                                                 print_progress_bar = True)
+lca_calculation_agrifootprint.calculate_LCIA_scores()
+lca_calculation_agrifootprint.write_results(path = output_path,
+                                            filename = "agrifootprint_SimaPro",
+                                            use_timestamp_in_filename = False,
+                                            clean = True)
 
 # Extract all inventories
 # ... from WFLDB v3.5 (SimaPro) with ecoinvent v3.5 background
 wfldb_simapro_inventories: list = [m for m in bw2data.Database(wfldb_db_name_simapro)]
 
 # Run LCA calculation
-LCA_results_wfldb_simapro: dict[str, pd.DataFrame] = run_LCA(activities = wfldb_simapro_inventories,
-                                                             methods = simapro_methods,
-                                                             write_LCI_exchanges = False,
-                                                             write_LCI_exchanges_as_emissions = False,
-                                                             write_LCIA_impacts_of_activity_exchanges = False,
-                                                             write_LCIA_process_contribution = False,
-                                                             write_LCIA_emission_contribution = False,
-                                                             write_characterization_factors = False,
-                                                             cutoff_process = 0.001,
-                                                             cutoff_emission = 0.001,
-                                                             write_results_to_file = True,
-                                                             local_output_path = output_path,
-                                                             filename_without_ending = "wfldb_SimaPro",
-                                                             use_timestamp_in_filename = True,
-                                                             print_progress_bar = True)
+lca_calculation_wfldb: LCA_Calculation = LCA_Calculation(activities = wfldb_simapro_inventories,
+                                                         methods = simapro_methods,
+                                                         functional_amount = 1,
+                                                         cut_off_percentage = 0.001,
+                                                         exchange_level = 1,
+                                                         print_progress_bar = True)
+lca_calculation_wfldb.calculate_LCIA_scores()
+lca_calculation_wfldb.write_results(path = output_path,
+                                    filename = "wfldb_SimaPro",
+                                    use_timestamp_in_filename = False,
+                                    clean = True)
 
 
 #%% Export inventories to SimaPro CSV
