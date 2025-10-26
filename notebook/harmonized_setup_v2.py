@@ -133,6 +133,11 @@ agribalyse_db_name_updated_simapro: str = agribalyse_db_name_simapro + " (backgr
 
 #%% Unregionalize food databases
 # !!! Load food databases from background, unregionalize and save again
+ecoinvent_db_unreg: bw2io.importers.base_lci.LCIImporter = utils.copy_brightway_database(db_name = ecoinvent_db_name_simapro, new_db_name = ecoinvent_db_name_simapro_unreg)
+agribalyse_db_unreg: bw2io.importers.base_lci.LCIImporter = utils.copy_brightway_database(db_name = agribalyse_db_name_simapro, new_db_name = agribalyse_db_name_simapro_unreg)
+agrifootprint_db_unreg: bw2io.importers.base_lci.LCIImporter = utils.copy_brightway_database(db_name = agrifootprint_db_name_simapro, new_db_name = agrifootprint_db_name_simapro_unreg)
+wfldb_db_unreg: bw2io.importers.base_lci.LCIImporter = utils.copy_brightway_database(db_name = wfldb_db_name_simapro, new_db_name = wfldb_db_name_simapro_unreg)
+salca_db_unreg: bw2io.importers.base_lci.LCIImporter = utils.copy_brightway_database(db_name = salca_db_name_simapro, new_db_name = salca_db_name_simapro_unreg)
 
 
 #%% Import Agribalyse LCI database from SimaPro
