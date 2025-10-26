@@ -3,6 +3,9 @@ The "bw2_sp" repository is a collection of useful functions to work with SimaPro
 
 The repository provides several modules that contain functions for different purposes:
 - [lci.py](lci.py) contains functions to import and harmonize life cycle inventory data from either SimaPro or XML (ecospold2) data
+- [lcia.py](lcia.py) contains functions to import life cycle impact assessment methods from either SimaPro or Excel and construct a respective biosphere out of it.
+- [link.py](link.py) contains functions to facilitate linking, either internally (within a database) or externally (to another database). It also provides a function to remove the existing linking.
+- [exporter.py](exporter.py) provides a function to export a registered Brightway activity back to a SimaPro CSV. Note: the export only works if data has been imported with [lci.py](lci.py) and follows SimaPro nomenclature.
 
 Checkout the [notebook folder](notebook/) for specific use cases.
 
