@@ -11,6 +11,7 @@ import utils
 import bw2io
 import bw2data
 import link
+from  datetime import datetime
 from functools import partial
 from lcia import (import_SimaPro_LCIA_methods,
                   register_biosphere,
@@ -23,10 +24,11 @@ from lci import (import_SimaPro_LCI_inventories,
 
 from utils import (change_brightway_project_directory,
                    change_database_name)
-from calculation_bw2 import LCA_Calculation
-from exporter import export_SimaPro_CSV
+
+
 
 #%% File- and folderpaths, key variables
+start_time = datetime.now()
 
 # LCI and LCIA data
 LCI_ecoinvent_simapro_folderpath: pathlib.Path = here.parent / "data" / "lci" / "ECO_fromSimaPro"
@@ -37,9 +39,19 @@ LCI_salca_simapro_folderpath: pathlib.Path = here.parent / "data" / "lci" / "SAL
 LCIA_SimaPro_CSV_folderpath: pathlib.Path = here.parent / "data" / "lcia" / "fromSimaPro"
 
 # Generic and Brightway
-project_path: pathlib.Path = here / "Brightway_projects"
+if bw2data.__version__[0] >= 4:
+    project_path: pathlib.Path = here  / "Brightway2.5_projects"
+else:
+    project_path: pathlib.Path = here / "Brightway2_projects"
+    
 project_path.mkdir(exist_ok = True)
-project_name: str = "Food databases"
+
+print("\nWrite the name of your project here and press Enter:")
+print("my project name = ")
+
+# Command to type in your desired project name in the console
+project_name: str = input() # "LCI and LCIA from SimaPro"
+print("\n")
 
 #%% Change brightway project directory and setup project
 change_brightway_project_directory(project_path)
@@ -456,123 +468,137 @@ agrifootprint_db_simapro.write_database()
 # Free up memory
 del agrifootprint_db_simapro
 
+#%%
+print('Project created')
+end_time = datetime.now()
 
-#%% Run LCA calculation
+print('Time elapsed' , str(round((end_time - start_time).seconds/60)), 'minutes')
 
-# Methods to use for the LCA calculation
-simapro_EF_LCIA_name: str = "Environmental Footprint v3.1"
-simapro_methods: list[tuple[str]] = [m for m in bw2data.methods if m[0] == simapro_EF_LCIA_name]
-methods_all: list[tuple] = list(bw2data.methods)
+#%% Example of how to run an LCA calculation
+# #%% Run LCA calculation
 
-# Check if all specified methods are registered in the Brightway background
-for method in simapro_methods:
-    error: bool = False
-    if method not in bw2data.methods:
-        error: bool = True
-        print("Method not registered: '{}'".format(method))
+# import sys
+# if 'bw25' in sys.prefix :
+#     from calculation_bw25 import LCA_Calculation
+# elif 'bw2_ab' in sys.prefix :
+#     from calculation_bw2 import LCA_Calculation
+# from exporter import export_SimaPro_CSV
 
-# If unregistered methods have been detected, raise error
-if error:
-    raise ValueError("Unregistered methods detected.")
+# # Methods to use for the LCA calculation
+# simapro_EF_LCIA_name: str = "Environmental Footprint v3.1"
+# simapro_methods: list[tuple[str]] = [m for m in bw2data.methods if m[0] == simapro_EF_LCIA_name]
+# methods_all: list[tuple] = list(bw2data.methods)
 
+# # Check if all specified methods are registered in the Brightway background
+# for method in simapro_methods:
+#     error: bool = False
+#     if method not in bw2data.methods:
+#         error: bool = True
+#         print("Method not registered: '{}'".format(method))
 
-#%% LCA calculation
-
-# Extract all inventories
-# ... from ecoinvent v3.10 (SimaPro)
-ecoinvent_simapro_inventories: list = [m for m in bw2data.Database(ecoinvent_db_name_simapro)]
-
-# Run LCA calculation
-lca_calculation_ecoinvent: LCA_Calculation = LCA_Calculation(activities = ecoinvent_simapro_inventories,
-                                                             methods = simapro_methods,
-                                                             functional_amount = 1,
-                                                             cut_off_percentage = 0.001,
-                                                             exchange_level = 1,
-                                                             print_progress_bar = True)
-lca_calculation_ecoinvent.calculate_LCIA_scores()
-lca_calculation_ecoinvent.write_results(path = output_path,
-                                        filename = "ecoinvent_SimaPro",
-                                        use_timestamp_in_filename = False,
-                                        clean = True)
-
-# Extract all inventories
-# ... from Agribalyse v3.1 (SimaPro) with ecoinvent v3.8 background
-agribalyse_simapro_inventories: list = [m for m in bw2data.Database(agribalyse_db_name_simapro)]
-
-# Run LCA calculation
-lca_calculation_agribalyse: LCA_Calculation = LCA_Calculation(activities = agribalyse_simapro_inventories,
-                                                             methods = simapro_methods,
-                                                             functional_amount = 1,
-                                                             cut_off_percentage = 0.001,
-                                                             exchange_level = 1,
-                                                             print_progress_bar = True)
-lca_calculation_agribalyse.calculate_LCIA_scores()
-lca_calculation_agribalyse.write_results(path = output_path,
-                                         filename = "agribalyse_SimaPro",
-                                         use_timestamp_in_filename = False,
-                                         clean = True)
-
-# Extract all inventories
-# ... from SALCA v3.10 (SimaPro) with ecoinvent v3.10 background
-salca_simapro_inventories: list = [m for m in bw2data.Database(salca_db_name_simapro)]
-
-# Run LCA calculation
-lca_calculation_salca: LCA_Calculation = LCA_Calculation(activities = salca_simapro_inventories,
-                                                         methods = simapro_methods,
-                                                         functional_amount = 1,
-                                                         cut_off_percentage = 0.001,
-                                                         exchange_level = 1,
-                                                         print_progress_bar = True)
-lca_calculation_salca.calculate_LCIA_scores()
-lca_calculation_salca.write_results(path = output_path,
-                                    filename = "salca_SimaPro",
-                                    use_timestamp_in_filename = False,
-                                    clean = True)
-
-# Extract all inventories
-# ... from Agrifootprint v6.3 (SimaPro) with ecoinvent v3.8 background
-agrifootprint_simapro_inventories: list = [m for m in bw2data.Database(agrifootprint_db_name_simapro)]
-
-# Run LCA calculation
-lca_calculation_agrifootprint: LCA_Calculation = LCA_Calculation(activities = agrifootprint_simapro_inventories,
-                                                                 methods = simapro_methods,
-                                                                 functional_amount = 1,
-                                                                 cut_off_percentage = 0.001,
-                                                                 exchange_level = 1,
-                                                                 print_progress_bar = True)
-lca_calculation_agrifootprint.calculate_LCIA_scores()
-lca_calculation_agrifootprint.write_results(path = output_path,
-                                            filename = "agrifootprint_SimaPro",
-                                            use_timestamp_in_filename = False,
-                                            clean = True)
-
-# Extract all inventories
-# ... from WFLDB v3.5 (SimaPro) with ecoinvent v3.5 background
-wfldb_simapro_inventories: list = [m for m in bw2data.Database(wfldb_db_name_simapro)]
-
-# Run LCA calculation
-lca_calculation_wfldb: LCA_Calculation = LCA_Calculation(activities = wfldb_simapro_inventories,
-                                                         methods = simapro_methods,
-                                                         functional_amount = 1,
-                                                         cut_off_percentage = 0.001,
-                                                         exchange_level = 1,
-                                                         print_progress_bar = True)
-lca_calculation_wfldb.calculate_LCIA_scores()
-lca_calculation_wfldb.write_results(path = output_path,
-                                    filename = "wfldb_SimaPro",
-                                    use_timestamp_in_filename = False,
-                                    clean = True)
+# # If unregistered methods have been detected, raise error
+# if error:
+#     raise ValueError("Unregistered methods detected.")
 
 
-#%% Export inventories to SimaPro CSV
-SimaPro_CSV_text_block: str = export_SimaPro_CSV(list_of_Brightway2_pewee_objects = ecoinvent_simapro_inventories[10:20],
-                                                 folder_path_SimaPro_CSV = output_path,
-                                                 file_name_SimaPro_CSV_without_ending = "10_exported_SimaPro_inventories",
-                                                 file_name_print_timestamp = True,
-                                                 separator = "\t",
-                                                 avoid_exporting_inventories_twice = True,
-                                                 csv_format_version = "7.0.0",
-                                                 decimal_separator = ".",
-                                                 date_separator = ".",
-                                                 short_date_format = "dd.MM.yyyy")
+# #%% LCA calculation
+
+# # Extract all inventories
+# # ... from ecoinvent v3.10 (SimaPro)
+# ecoinvent_simapro_inventories: list = [m for m in bw2data.Database(ecoinvent_db_name_simapro)]
+
+# # Run LCA calculation
+# lca_calculation_ecoinvent: LCA_Calculation = LCA_Calculation(activities = ecoinvent_simapro_inventories,
+#                                                              methods = simapro_methods,
+#                                                              functional_amount = 1,
+#                                                              cut_off_percentage = 0.001,
+#                                                              exchange_level = 1,
+#                                                              print_progress_bar = True)
+# lca_calculation_ecoinvent.calculate_LCIA_scores()
+# lca_calculation_ecoinvent.write_results(path = output_path,
+#                                         filename = "ecoinvent_SimaPro",
+#                                         use_timestamp_in_filename = False,
+#                                         clean = True)
+
+# # Extract all inventories
+# # ... from Agribalyse v3.1 (SimaPro) with ecoinvent v3.8 background
+# agribalyse_simapro_inventories: list = [m for m in bw2data.Database(agribalyse_db_name_simapro)]
+
+# # Run LCA calculation
+# lca_calculation_agribalyse: LCA_Calculation = LCA_Calculation(activities = agribalyse_simapro_inventories,
+#                                                              methods = simapro_methods,
+#                                                              functional_amount = 1,
+#                                                              cut_off_percentage = 0.001,
+#                                                              exchange_level = 1,
+#                                                              print_progress_bar = True)
+# lca_calculation_agribalyse.calculate_LCIA_scores()
+# lca_calculation_agribalyse.write_results(path = output_path,
+#                                          filename = "agribalyse_SimaPro",
+#                                          use_timestamp_in_filename = False,
+#                                          clean = True)
+
+# # Extract all inventories
+# # ... from SALCA v3.10 (SimaPro) with ecoinvent v3.10 background
+# salca_simapro_inventories: list = [m for m in bw2data.Database(salca_db_name_simapro)]
+
+# # Run LCA calculation
+# lca_calculation_salca: LCA_Calculation = LCA_Calculation(activities = salca_simapro_inventories,
+#                                                          methods = simapro_methods,
+#                                                          functional_amount = 1,
+#                                                          cut_off_percentage = 0.001,
+#                                                          exchange_level = 1,
+#                                                          print_progress_bar = True)
+# lca_calculation_salca.calculate_LCIA_scores()
+# lca_calculation_salca.write_results(path = output_path,
+#                                     filename = "salca_SimaPro",
+#                                     use_timestamp_in_filename = False,
+#                                     clean = True)
+
+# # Extract all inventories
+# # ... from Agrifootprint v6.3 (SimaPro) with ecoinvent v3.8 background
+# agrifootprint_simapro_inventories: list = [m for m in bw2data.Database(agrifootprint_db_name_simapro)]
+
+# # Run LCA calculation
+# lca_calculation_agrifootprint: LCA_Calculation = LCA_Calculation(activities = agrifootprint_simapro_inventories,
+#                                                                  methods = simapro_methods,
+#                                                                  functional_amount = 1,
+#                                                                  cut_off_percentage = 0.001,
+#                                                                  exchange_level = 1,
+#                                                                  print_progress_bar = True)
+# lca_calculation_agrifootprint.calculate_LCIA_scores()
+# lca_calculation_agrifootprint.write_results(path = output_path,
+#                                             filename = "agrifootprint_SimaPro",
+#                                             use_timestamp_in_filename = False,
+#                                             clean = True)
+
+# # Extract all inventories
+# # ... from WFLDB v3.5 (SimaPro) with ecoinvent v3.5 background
+# wfldb_simapro_inventories: list = [m for m in bw2data.Database(wfldb_db_name_simapro)]
+
+# # Run LCA calculation
+# lca_calculation_wfldb: LCA_Calculation = LCA_Calculation(activities = wfldb_simapro_inventories,
+#                                                          methods = simapro_methods,
+#                                                          functional_amount = 1,
+#                                                          cut_off_percentage = 0.001,
+#                                                          exchange_level = 1,
+#                                                          print_progress_bar = True)
+# lca_calculation_wfldb.calculate_LCIA_scores()
+# lca_calculation_wfldb.write_results(path = output_path,
+#                                     filename = "wfldb_SimaPro",
+#                                     use_timestamp_in_filename = False,
+#                                     clean = True)
+
+
+# #%% Export inventories to SimaPro CSV
+# SimaPro_CSV_text_block: str = export_SimaPro_CSV(list_of_Brightway2_pewee_objects = ecoinvent_simapro_inventories[10:20],
+#                                                  folder_path_SimaPro_CSV = output_path,
+#                                                  file_name_SimaPro_CSV_without_ending = "10_exported_SimaPro_inventories",
+#                                                  file_name_print_timestamp = True,
+#                                                  separator = "\t",
+#                                                  avoid_exporting_inventories_twice = True,
+#                                                  csv_format_version = "7.0.0",
+#                                                  decimal_separator = ".",
+#                                                  date_separator = ".",
+#                                                  short_date_format = "dd.MM.yyyy")
+
 
