@@ -779,6 +779,11 @@ correspondence_mapping: list[dict] = create_correspondence_mapping(path_to_corre
                                                                    map_to_version = (3, 10),
                                                                    output_path = output_path)
 
+#%% Create default variables to log data
+unsuccessfully_migrated: list[dict] = []
+successfully_migrated: list[dict] = []
+SBERT_to_map: list[dict] = []
+
 #%% Read Agribalyse again from SimaPro CSV files where we will then update the background
 agribalyse_db_updated_simapro: bw2io.importers.base_lci.LCIImporter = import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths = [LCI_agribalyse_simapro_folderpath / "AGB.CSV"],
                                                                                                      db_name = agribalyse_db_name_updated_simapro,
@@ -822,9 +827,9 @@ AGB_background_ei_migration: dict = create_harmonized_activity_migration(flows_1
                                                                          ecoinvent_correspondence_mapping = correspondence_mapping)
 
 # SBERT to map for activities
-pd.DataFrame(AGB_background_ei_migration["successfully_migrated_activity_flows"]).to_excel(output_path / "AGB_background_ei_flows_successfully_migrated.xlsx")
-pd.DataFrame(AGB_background_ei_migration["unsuccessfully_migrated_activity_flows"]).to_excel(output_path / "AGB_background_ei_unuccessfully_migrated.xlsx")
-pd.DataFrame(AGB_background_ei_migration["SBERT_to_map"]).to_excel(output_path / "AGB_background_ei_flows_SBERT_to_map.xlsx")
+unsuccessfully_migrated += [{**{"FROM_" + k: v for k, v in m.items()}, **{"Database": agribalyse_db_name_updated_simapro}} for m, _ in AGB_background_ei_migration["unsuccessfully_migrated_activity_flows"]]
+successfully_migrated += [{**{"FROM_" + k: v for k, v in m.items()}, **{"TO_" + k: v for k, v in n.items()}, **{"Database": agribalyse_db_name_updated_simapro}} for m, n in AGB_background_ei_migration["successfully_migrated_activity_flows"]]
+SBERT_to_map += [{**m, **{"Database": agribalyse_db_name_updated_simapro}} for m in AGB_background_ei_migration["SBERT_to_map"]]
 
 # Create the JSON object to be written
 AGB_background_ei_migration_in_json_format = json.dumps(AGB_background_ei_migration["activity_migration"], indent = 3)
@@ -878,7 +883,7 @@ print()
     
 # Write database
 print("\n-----------Write database: " + agribalyse_db_name_updated_simapro)
-# agribalyse_db_updated_simapro.write_database(overwrite = False) # !!! Uncomment
+agribalyse_db_updated_simapro.write_database(overwrite = False) # !!! Uncomment
 print()
 
 # Free up memory
@@ -929,9 +934,9 @@ WFLDB_background_ei_migration: dict = create_harmonized_activity_migration(flows
                                                                            ecoinvent_correspondence_mapping = correspondence_mapping)
 
 # SBERT to map for activities
-pd.DataFrame(WFLDB_background_ei_migration["successfully_migrated_activity_flows"]).to_excel(output_path / "WFLDB_background_ei_flows_successfully_migrated.xlsx")
-pd.DataFrame(WFLDB_background_ei_migration["unsuccessfully_migrated_activity_flows"]).to_excel(output_path / "WFLDB_background_ei_unuccessfully_migrated.xlsx")
-pd.DataFrame(WFLDB_background_ei_migration["SBERT_to_map"]).to_excel(output_path / "WFLDB_background_ei_flows_SBERT_to_map.xlsx")
+unsuccessfully_migrated += [{**{"FROM_" + k: v for k, v in m.items()}, **{"Database": wfldb_db_name_updated_simapro}} for m, _ in WFLDB_background_ei_migration["unsuccessfully_migrated_activity_flows"]]
+successfully_migrated += [{**{"FROM_" + k: v for k, v in m.items()}, **{"TO_" + k: v for k, v in n.items()}, **{"Database": wfldb_db_name_updated_simapro}} for m, n in WFLDB_background_ei_migration["successfully_migrated_activity_flows"]]
+SBERT_to_map += [{**m, **{"Database": wfldb_db_name_updated_simapro}} for m in WFLDB_background_ei_migration["SBERT_to_map"]]
 
 # Create the JSON object to be written
 WFLDB_background_ei_migration_in_json_format = json.dumps(WFLDB_background_ei_migration["activity_migration"], indent = 3)
@@ -986,7 +991,7 @@ print()
     
 # Write database
 print("\n-----------Write database: " + wfldb_db_name_updated_simapro)
-# wfldb_db_updated_simapro.write_database(overwrite = False) # !!! Uncomment
+wfldb_db_updated_simapro.write_database(overwrite = False) # !!! Uncomment
 print()
 
 # Free up memory
@@ -1042,9 +1047,9 @@ SALCA_background_ei_migration: dict = create_harmonized_activity_migration(flows
                                                                            ecoinvent_correspondence_mapping = correspondence_mapping)
 
 # SBERT to map for activities
-pd.DataFrame(SALCA_background_ei_migration["successfully_migrated_activity_flows"]).to_excel(output_path / "SALCA_background_ei_flows_successfully_migrated.xlsx")
-pd.DataFrame(SALCA_background_ei_migration["unsuccessfully_migrated_activity_flows"]).to_excel(output_path / "SALCA_background_ei_unuccessfully_migrated.xlsx")
-pd.DataFrame(SALCA_background_ei_migration["SBERT_to_map"]).to_excel(output_path / "SALCA_background_ei_flows_SBERT_to_map.xlsx")
+unsuccessfully_migrated += [{**{"FROM_" + k: v for k, v in m.items()}, **{"Database": salca_db_name_updated_simapro}} for m, _ in SALCA_background_ei_migration["unsuccessfully_migrated_activity_flows"]]
+successfully_migrated += [{**{"FROM_" + k: v for k, v in m.items()}, **{"TO_" + k: v for k, v in n.items()}, **{"Database": salca_db_name_updated_simapro}} for m, n in SALCA_background_ei_migration["successfully_migrated_activity_flows"]]
+SBERT_to_map += [{**m, **{"Database": salca_db_name_updated_simapro}} for m in SALCA_background_ei_migration["SBERT_to_map"]]
 
 # Create the JSON object to be written
 SALCA_background_ei_migration_in_json_format = json.dumps(SALCA_background_ei_migration["activity_migration"], indent = 3)
@@ -1087,6 +1092,17 @@ salca_db_updated_simapro.apply_strategy(partial(link.link_activities_internally,
                                                 remove_special_characters = False,
                                                 verbose = True), verbose = True)
 
+salca_db_updated_simapro.apply_strategy(partial(link.link_activities_externally,
+                                        link_to_databases = (wfldb_db_name_updated_simapro,),
+                                        link_production_exchanges = False,
+                                        link_substitution_exchanges = False,
+                                        link_technosphere_exchanges = True,
+                                        relink = False,
+                                        strip = True,
+                                        case_insensitive = True,
+                                        remove_special_characters = False,
+                                        verbose = True), verbose = True)
+
 # Write unlinked biosphere flows to XLSX
 print("\n-----------Write unlinked flows to excel file")
 salca_db_updated_simapro.write_excel(only_unlinked = True)
@@ -1098,7 +1114,7 @@ print()
     
 # Write database
 print("\n-----------Write database: " + salca_db_name_updated_simapro)
-# salca_db_updated_simapro.write_database(overwrite = False) # !!! Uncomment
+salca_db_updated_simapro.write_database(overwrite = False) # !!! Uncomment
 print()
 
 # Free up memory
@@ -1154,9 +1170,9 @@ AGF_background_ei_migration: dict = create_harmonized_activity_migration(flows_1
                                                                          ecoinvent_correspondence_mapping = correspondence_mapping)
 
 # SBERT to map for activities
-pd.DataFrame(AGF_background_ei_migration["successfully_migrated_activity_flows"]).to_excel(output_path / "AGF_background_ei_flows_successfully_migrated.xlsx")
-pd.DataFrame(AGF_background_ei_migration["unsuccessfully_migrated_activity_flows"]).to_excel(output_path / "AGF_background_ei_unuccessfully_migrated.xlsx")
-pd.DataFrame(AGF_background_ei_migration["SBERT_to_map"]).to_excel(output_path / "AGF_background_ei_flows_SBERT_to_map.xlsx")
+unsuccessfully_migrated += [{**{"FROM_" + k: v for k, v in m.items()}, **{"Database": agrifootprint_db_name_updated_simapro}} for m, _ in AGF_background_ei_migration["unsuccessfully_migrated_activity_flows"]]
+successfully_migrated += [{**{"FROM_" + k: v for k, v in m.items()}, **{"TO_" + k: v for k, v in n.items()}, **{"Database": agrifootprint_db_name_updated_simapro}} for m, n in AGF_background_ei_migration["successfully_migrated_activity_flows"]]
+SBERT_to_map += [{**m, **{"Database": agrifootprint_db_name_updated_simapro}} for m in AGF_background_ei_migration["SBERT_to_map"]]
 
 # Create the JSON object to be written
 AGF_background_ei_migration_in_json_format = json.dumps(AGF_background_ei_migration["activity_migration"], indent = 3)
@@ -1211,12 +1227,39 @@ print()
     
 # Write database
 print("\n-----------Write database: " + agrifootprint_db_name_updated_simapro)
-# agrifootprint_db_updated_simapro.write_database(overwrite = False) # !!! Uncomment
+agrifootprint_db_updated_simapro.write_database(overwrite = False) # !!! Uncomment
 print()
 
 # Free up memory
 del agrifootprint_db_updated_simapro
 
+
+#%% Create migration tables
+cols_order: tuple[str] = ("Database",
+                          "FROM_type",
+                          "FROM_activity_code",
+                          "FROM_reference_product_code",
+                          "FROM_activity_name",
+                          "FROM_reference_product_name",
+                          "FROM_name",
+                          "FROM_SimaPro_name",
+                          "FROM_unit",
+                          "FROM_location",
+                          "TO_code",
+                          "TO_type",
+                          "TO_activity_code",
+                          "TO_reference_product_code",
+                          "TO_activity_name",
+                          "TO_reference_product_name",
+                          "TO_SimaPro_name",
+                          "TO_unit",
+                          "TO_location",
+                          "TO_multiplier"
+                          )
+
+pd.DataFrame([{n: m.get(n) for n in cols_order} for m in successfully_migrated]).to_excel(output_path / "background_ei_flows_successfully_migrated.xlsx")
+pd.DataFrame([{n: m.get(n) for n in cols_order} for m in unsuccessfully_migrated]).to_excel(output_path / "background_ei_flows_unsuccessfully_migrated.xlsx")
+pd.DataFrame(SBERT_to_map).to_excel(output_path / "background_ei_flows_SBERT_to_map.xlsx")
 
 #%% Run LCA calculation
 
@@ -1309,6 +1352,7 @@ df_1.query("Method_standardized != ''").to_excel(output_path / "comparison_ecoin
 
 # Free up memory
 del LCA_results_ecoinvent_simapro, LCA_results_ecoinvent_xml
+
 
 #%% Comparison 2
 

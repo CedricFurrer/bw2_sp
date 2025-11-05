@@ -460,7 +460,6 @@ def create_harmonized_activity_migration(flows_1: list,
         if (exc_name, exc_location, exc_unit) in successful_migration_data:
             continue
         
-        
         SimaPro_fields: list[tuple, float] = (
             [((exc_SimaPro_name, exc_unit), float(1))] +
             [((exc_created_SimaPro_name, exc_unit), float(1))] +
@@ -479,16 +478,59 @@ def create_harmonized_activity_migration(flows_1: list,
             [((exc_activity_code, exc_reference_product_code), float(1))] +
             [((exc_activity_name, exc_reference_product_name, exc_location, exc_unit), float(1))] +
             [((exc_reference_product_name + " " + exc_activity_name, exc_location, exc_unit), float(1))] +
-            [((exc_activity_name + " " + exc_reference_product_name, exc_location, exc_unit), float(1))]
+            [((exc_activity_name + " " + exc_reference_product_name, exc_location, exc_unit), float(1))] +
+            [((exc_activity_name + " " + exc_reference_product_name, exc_reference_product_name, exc_location, exc_unit), float(1))] # !!! added
             )
         
         XML_fields_and_no_units: list[tuple, float] = (
             [((exc_activity_name, exc_reference_product_name, exc_location), float(1))] +
             [((exc_reference_product_name + " " + exc_activity_name, exc_location), float(1))] +
-            [((exc_activity_name + " " + exc_reference_product_name, exc_location), float(1))]
+            [((exc_activity_name + " " + exc_reference_product_name, exc_location), float(1))] +
+            [((exc_activity_name + " " + exc_reference_product_name, exc_reference_product_name, exc_location), float(1))] # !!! added
             )
+        
+        options: list[tuple, float] = (SimaPro_fields +
+                                       XML_fields +
+                                       SimaPro_fields_and_no_units +
+                                       XML_fields_and_no_units)
+        
+        new_locations: dict[str, str] = {"GLO": "RoW",
+                                         "RoW": "GLO"} 
+        
+        if exc_location in new_locations:
+            new_location: str = new_locations[exc_location]
             
-        for ID, multiplier in SimaPro_fields + XML_fields + SimaPro_fields_and_no_units + XML_fields_and_no_units:
+            SimaPro_fields_other_location: list[tuple, float] = (
+                [((exc_name, new_location, exc_unit), float(1))] +
+                [((SBERT_name, new_location, exc_unit), SBERT_multiplier) for (SBERT_name, SBERT_location), SBERT_multiplier in exc_SBERTs.items()]
+                )
+            
+            SimaPro_fields_and_no_units_other_location: list[tuple, float] = (
+                [((exc_name, new_location), float(1))] +
+                [((SBERT_name, new_location), SBERT_multiplier) for (SBERT_name, SBERT_location), SBERT_multiplier in exc_SBERTs.items()]
+                )
+            
+            XML_fields_other_location: list[tuple, float] = (
+                [((exc_activity_name, exc_reference_product_name, new_location, exc_unit), float(1))] +
+                [((exc_reference_product_name + " " + exc_activity_name, new_location, exc_unit), float(1))] +
+                [((exc_activity_name + " " + exc_reference_product_name, new_location, exc_unit), float(1))] +
+                [((exc_activity_name + " " + exc_reference_product_name, exc_reference_product_name, new_location, exc_unit), float(1))] # !!! added
+                )
+            
+            XML_fields_and_no_units_other_location: list[tuple, float] = (
+                [((exc_activity_name, exc_reference_product_name, new_location), float(1))] +
+                [((exc_reference_product_name + " " + exc_activity_name, new_location), float(1))] +
+                [((exc_activity_name + " " + exc_reference_product_name, new_location), float(1))] +
+                [((exc_activity_name + " " + exc_reference_product_name, exc_reference_product_name, new_location), float(1))] # !!! added
+                )
+            
+            options += (SimaPro_fields_other_location +
+                        XML_fields_other_location +
+                        SimaPro_fields_and_no_units_other_location +
+                        XML_fields_and_no_units_other_location)
+        
+        
+        for ID, multiplier in options:
             
             if any([True if n is None else False for n in ID]):
                 continue
