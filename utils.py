@@ -141,6 +141,10 @@ def add_unlinked_flows_to_biosphere_database(db: bw2io.importers.base_lci.LCIImp
     # Merge both, already existing and new biosphere flows
     biosphere_new_data = {**biosphere_unlinked_loaded, **new}
     
+    # Simply return if no unlinked flows were found that need to be added
+    if new == {}:
+        return biosphere_new_data
+    
     # Delete database, if it exists
     # Reason: we need to delete it first and write it afterwards again
     if biosphere_db_name_unlinked in bw2data.databases:
