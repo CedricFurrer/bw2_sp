@@ -215,6 +215,15 @@ if wfldb_db_name_simapro in bw2data.databases:
 print("\n------- Write database: " + wfldb_db_name_simapro)
 wfldb_db_simapro.write_database()
 
+# Create a database object that will be used afterwards to update the background
+wfldb_db_updated_simapro: bw2io.importers.base_lci.LCIImporter = bw2io.importers.base_lci.LCIImporter(wfldb_db_name_updated_simapro)
+wfldb_db_updated_simapro.data: list[dict] = copy.deepcopy(wfldb_db_simapro.data)
+
+# Rename the database with the new name
+wfldb_db_updated_simapro.apply_strategy(partial(change_database_name,
+                                                new_db_name = wfldb_db_name_updated_simapro,
+                                                ))
+
 # Free up memory
 del wfldb_db_simapro, unlinked_biosphere_flows
 
@@ -225,6 +234,9 @@ ecoinvent_db_simapro: bw2io.importers.base_lci.LCIImporter = import_SimaPro_LCI_
                                                                                             encoding = "latin-1",
                                                                                             delimiter = "\t",
                                                                                             verbose = True)
+
+# Unregionalized the ecoinvent Database
+ecoinvent_db_simapro.apply_strategy(unregionalize_biosphere)
 
 ecoinvent_db_simapro.apply_strategy(partial(migrate_from_excel_file,
                                             excel_migration_filepath = LCI_ecoinvent_simapro_folderpath / "custom_migration_ECO.xlsx",
@@ -237,19 +249,21 @@ salca_db_simapro: bw2io.importers.base_lci.LCIImporter = bw2io.importers.base_lc
 salca_db_simapro.data: list[dict] = copy.deepcopy(ecoinvent_db_simapro.data)
 
 # Specific patterns that are used to identify the SALCA inventories
-SALCA_patterns: list[str] = [
-                      "SALCA", # abbreviation to identify SALCA inventories
-                      "SLACA", # WOW... I mean come on...
-                      "WFLDB", # because why not finding WFLDB inventories in SALCA/ecoinvent?
-                      "maize silage, conservation, sect.", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to exclude it.
-                      "maize silage, horiz. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to exclude it.
-                      "maize silage, tow. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to exclude it.
-                      ]
+SALCA_patterns_to_exclude: list[str] = [
+                          "SALCA", # abbreviation to identify SALCA inventories
+                          "SLACA", # WOW... I mean come on...
+                          "WFLDB", # because why not finding WFLDB inventories in SALCA/ecoinvent?
+                          "maize silage, conservation, sect.", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to exclude it.
+                          "maize silage, horiz. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to exclude it.
+                          "maize silage, tow. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to exclude it.
+                          "EI3AS", # specific inventories from ecoinvent that were adapted and do not really belong to ecoinvent
+                          "Phosphate rock, as P2O5, beneficiated, dry", # Well...
+                          ]
 
 ecoinvent_db_simapro.apply_strategy(partial(select_inventory_using_regex,
                                             exclude = True,
                                             include = False,
-                                            patterns = SALCA_patterns,
+                                            patterns = SALCA_patterns_to_exclude,
                                             case_sensitive = True))
 
 # Link flows
@@ -301,29 +315,33 @@ del unlinked_biosphere_flows
 
 #%% Import SALCA LCI database from SimaPro
 
-# Unregionalized the SALCA Database
-salca_db_simapro.apply_strategy(unregionalize_biosphere)
-
 # Specific patterns that are used to identify the SALCA inventories
-SALCA_patterns: list[str] = [
-                      "SALCA", # abbreviation to identify SALCA inventories
-                      "SLACA", # WOW... I mean come on...
-                      # "WFLDB", # because why not finding WFLDB inventories in SALCA/ecoinvent?
-                      "maize silage, conservation, sect.", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
-                      "maize silage, horiz. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
-                      "maize silage, tow. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
-                      ]
+SALCA_patterns_to_include: list[str] = [
+                          "SALCA", # abbreviation to identify SALCA inventories
+                          "SLACA", # WOW... I mean come on...
+                          # "WFLDB", # because why not finding WFLDB inventories in SALCA/ecoinvent?
+                          "maize silage, conservation, sect.", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
+                          "maize silage, horiz. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
+                          "maize silage, tow. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
+                          "EI3AS", # specific inventories from ecoinvent that were adapted and do not really belong to ecoinvent
+                          "Phosphate rock, as P2O5, beneficiated, dry", # Well...
+                          ]
 
 salca_db_simapro.apply_strategy(partial(select_inventory_using_regex,
                                         exclude = False,
                                         include = True,
-                                        patterns = SALCA_patterns,
+                                        patterns = SALCA_patterns_to_include,
                                         case_sensitive = True))
 
 # Rename the database of the activities and the production exchanges
 salca_db_simapro.apply_strategy(partial(change_database_name,
                                         new_db_name = salca_db_name_simapro,
                                         ))
+
+# # !!!
+# see_salca = [m for m in salca_db_simapro if m["name"] == "Phosphate rock, as P2O5, beneficiated, dry {{COUNTRY}}| phosphate rock beneficiation, dry | Cut-off, U"]
+# see_eco = [m for m in ecoinvent_db_simapro if m["name"] == "Phosphate rock, as P2O5, beneficiated, dry {{COUNTRY}}| phosphate rock beneficiation, dry | Cut-off, U"]
+# # !!!
 
 salca_db_simapro.apply_strategy(partial(migrate_from_excel_file,
                                         excel_migration_filepath = LCI_salca_simapro_folderpath / "custom_migration_SALCA.xlsx",
@@ -351,21 +369,55 @@ salca_db_simapro.apply_strategy(partial(link.link_biosphere_flows_externally,
                                         verbose = True), verbose = True)
 
 salca_db_simapro.apply_strategy(partial(link.link_activities_internally,
-                                        production_exchanges = True,
-                                        substitution_exchanges = True,
-                                        technosphere_exchanges = True,
-                                        relink = True,
-                                        strip = True,
-                                        case_insensitive = True,
-                                        remove_special_characters = False,
-                                        verbose = True), verbose = True)
+                                                production_exchanges = True,
+                                                substitution_exchanges = True,
+                                                technosphere_exchanges = True,
+                                                relink = False,
+                                                strip = True,
+                                                case_insensitive = True,
+                                                remove_special_characters = False,
+                                                verbose = True), verbose = True)
 
 salca_db_simapro.apply_strategy(partial(link.link_activities_externally,
-                                        link_to_databases = (ecoinvent_db_name_simapro, wfldb_db_name_simapro),
+                                                link_to_databases = (wfldb_db_name_simapro,),
+                                                link_production_exchanges = False,
+                                                link_substitution_exchanges = False,
+                                                link_technosphere_exchanges = True,
+                                                relink = False,
+                                                strip = True,
+                                                case_insensitive = True,
+                                                remove_special_characters = False,
+                                                verbose = True), verbose = True)
+
+salca_n_datasets, salca_n_exchanges, salca_n_unlinked = salca_db_simapro.statistics()
+exchanges_that_are_salca_inventories: list[dict] = [exc for m in salca_db_simapro for exc in m["exchanges"] if "input" not in exc and exc["type"] in ["technosphere", "substitution"] and not exc.get("is_ecoinvent", False)]
+
+salca_inventories_to_be_added: dict = {}
+ecoinvent_db_from_background = {(m["name"], m["location"], m["unit"]): m for m in bw2data.Database(ecoinvent_db_name_simapro)}
+
+for exc in exchanges_that_are_salca_inventories:
+    
+    ID: tuple[str, str, str] = (exc["name"], exc["location"], exc["unit"])
+    
+    if ID in salca_inventories_to_be_added:
+        continue
+    
+    act: dict = {**ecoinvent_db_from_background[ID].as_dict(), **{"exchanges": [m.as_dict() for m in ecoinvent_db_from_background[ID].exchanges()]}}
+    salca_inventories_to_be_added[ID]: dict = act
+
+salca_db_simapro.data += list(salca_inventories_to_be_added.values())
+
+# The new activities imported from ecoinvent need to be renamed
+salca_db_simapro.apply_strategy(partial(change_database_name,
+                                        new_db_name = salca_db_name_simapro,
+                                        ))
+
+salca_db_simapro.apply_strategy(partial(link.link_activities_externally,
+                                        link_to_databases = (ecoinvent_db_name_simapro,),
                                         link_production_exchanges = False,
                                         link_substitution_exchanges = False,
                                         link_technosphere_exchanges = True,
-                                        relink = True,
+                                        relink = False,
                                         strip = True,
                                         case_insensitive = True,
                                         remove_special_characters = False,
@@ -392,6 +444,15 @@ if salca_db_name_simapro in bw2data.databases:
 # Write database
 print("\n------- Write database: " + salca_db_name_simapro)
 salca_db_simapro.write_database()
+
+# Create a database object that will be used afterwards to update the background
+salca_db_updated_simapro: bw2io.importers.base_lci.LCIImporter = bw2io.importers.base_lci.LCIImporter(salca_db_name_updated_simapro)
+salca_db_updated_simapro.data: list[dict] = copy.deepcopy(salca_db_simapro.data)
+
+# Rename the database with the new name
+salca_db_updated_simapro.apply_strategy(partial(change_database_name,
+                                                new_db_name = salca_db_name_updated_simapro,
+                                                ))
 
 # Free up memory
 del salca_db_simapro, unlinked_biosphere_flows
@@ -453,6 +514,15 @@ if agribalyse_db_name_simapro in bw2data.databases:
 # Write database
 print("\n------- Write database: " + agribalyse_db_name_simapro)
 agribalyse_db_simapro.write_database()
+
+# Create a database object that will be used afterwards to update the background
+agribalyse_db_updated_simapro: bw2io.importers.base_lci.LCIImporter = bw2io.importers.base_lci.LCIImporter(agribalyse_db_name_updated_simapro)
+agribalyse_db_updated_simapro.data: list[dict] = copy.deepcopy(agribalyse_db_simapro.data)
+
+# Rename the database with the new name
+agribalyse_db_updated_simapro.apply_strategy(partial(change_database_name,
+                                                     new_db_name = agribalyse_db_name_updated_simapro,
+                                                     ))
 
 # Free up memory
 del agribalyse_db_simapro, unlinked_biosphere_flows
@@ -521,6 +591,15 @@ if agrifootprint_db_name_simapro in bw2data.databases:
 print("\n------- Write database: " + agrifootprint_db_name_simapro)
 agrifootprint_db_simapro.write_database()
 
+# Create a database object that will be used afterwards to update the background
+agrifootprint_db_updated_simapro: bw2io.importers.base_lci.LCIImporter = bw2io.importers.base_lci.LCIImporter(agrifootprint_db_name_updated_simapro)
+agrifootprint_db_updated_simapro.data: list[dict] = copy.deepcopy(agrifootprint_db_simapro.data)
+
+# Rename the database with the new name
+agrifootprint_db_updated_simapro.apply_strategy(partial(change_database_name,
+                                                        new_db_name = agrifootprint_db_name_updated_simapro,
+                                                        ))
+
 # Free up memory
 del agrifootprint_db_simapro, unlinked_biosphere_flows
 
@@ -560,6 +639,11 @@ ecoinvent_db_xml.apply_strategy(partial(link.link_biosphere_flows_externally,
 print("\n-----------Linking statistics of current database import")
 ecoinvent_db_xml.statistics()
 print()
+
+# Delete database first, if existing
+if ecoinvent_db_name_xml in bw2data.databases:
+    print("\n-----------Delete database: " + ecoinvent_db_name_xml)
+    del bw2data.databases[ecoinvent_db_name_xml]
 
 print("\n-----------Write database: " + ecoinvent_db_name_xml)
 ecoinvent_db_xml.write_database(overwrite = False)
@@ -762,15 +846,19 @@ unlinked_biosphere_flows: dict = utils.add_unlinked_flows_to_biosphere_database(
 print("\n-----------Linking statistics of current database import")
 ecoinvent_db_xml_migrated.statistics()
 print()
-    
+
+# Delete database first, if existing
+if ecoinvent_db_name_xml_migrated in bw2data.databases:
+    print("\n-----------Delete database: " + ecoinvent_db_name_xml_migrated)
+    del bw2data.databases[ecoinvent_db_name_xml_migrated]
+
 # Write database
-print("\n-----------Write database: " + ecoinvent_db_name_xml)
+print("\n-----------Write database: " + ecoinvent_db_name_xml_migrated)
 ecoinvent_db_xml_migrated.write_database(overwrite = False)
 print()
 
 # Free up memory
 del ecoinvent_db_xml_migrated
-# del ecoinvent_db_simapro
 
 
 #%% Create correspondence mapping
@@ -784,38 +872,7 @@ unsuccessfully_migrated: list[dict] = []
 successfully_migrated: list[dict] = []
 SBERT_to_map: list[dict] = []
 
-#%% Read Agribalyse again from SimaPro CSV files where we will then update the background
-agribalyse_db_updated_simapro: bw2io.importers.base_lci.LCIImporter = import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths = [LCI_agribalyse_simapro_folderpath / "AGB.CSV"],
-                                                                                                     db_name = agribalyse_db_name_updated_simapro,
-                                                                                                     encoding = "latin-1",
-                                                                                                     delimiter = "\t",
-                                                                                                     verbose = True)
-agribalyse_db_updated_simapro.apply_strategy(unregionalize_biosphere)
-
-agribalyse_db_updated_simapro.apply_strategy(partial(link.link_biosphere_flows_externally,
-                                                     biosphere_db_name = biosphere_db_name_simapro,
-                                                     biosphere_db_name_unlinked = unlinked_biosphere_db_name,
-                                                     other_biosphere_databases = None,
-                                                     linking_order = None,
-                                                     relink = False,
-                                                     strip = True,
-                                                     case_insensitive = True,
-                                                     remove_special_characters = False,
-                                                     verbose = True), verbose = True)
-
-agribalyse_db_updated_simapro.apply_strategy(partial(migrate_from_excel_file,
-                                                     excel_migration_filepath = LCI_agribalyse_simapro_folderpath / "custom_migration_AGB.xlsx",
-                                                     migrate_activities = False,
-                                                     migrate_exchanges = True),
-                                             verbose = True)
-
-agribalyse_db_updated_simapro.apply_strategy(partial(link.remove_linking,
-                                                     production_exchanges = False,
-                                                     substitution_exchanges = True,
-                                                     technosphere_exchanges = True,
-                                                     biosphere_exchanges = False), verbose = True)
-
-#%% Create the activity migration --> all ecoinvent v3.8 found in the background from Agribalyse should be updated to ecoinvent v3.10, if possible
+#%% Create the Agribalyse background activity migration --> all ecoinvent v3.8 found in the background from Agribalyse should be updated to ecoinvent v3.10, if possible
 agribalyse_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(agribalyse_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
 
 # Load dataframe with manually checked activity flows
@@ -842,6 +899,12 @@ with open(filepath_AGB_background_ei_migration_data, "w") as outfile:
 del agribalyse_exchanges_to_migrate_to_ecoinvent, AGB_background_ei_migration, AGB_background_ei_migration_in_json_format
 
 #%% Update the ecoinvent background activities in the Agribalyse database from v3.8 to v3.10 and register database
+agribalyse_db_updated_simapro.apply_strategy(partial(link.remove_linking,
+                                                     production_exchanges = False,
+                                                     substitution_exchanges = True,
+                                                     technosphere_exchanges = True,
+                                                     biosphere_exchanges = False), verbose = True)
+
 # Apply activity migration
 agribalyse_db_updated_simapro.apply_strategy(partial(migrate_from_json_file,
                                                      json_migration_filepath = filepath_AGB_background_ei_migration_data,
@@ -872,18 +935,24 @@ agribalyse_db_updated_simapro.apply_strategy(partial(link.link_activities_intern
                                                      remove_special_characters = False,
                                                      verbose = True), verbose = True)
 
+
+# Show statistic of current linking of database import
+print("\n-----------Linking statistics of current database import")
+agribalyse_n_datasets, agribalyse_n_exchanges, agribalyse_n_unlinked = agribalyse_db_updated_simapro.statistics()
+print()
+
 # Write unlinked biosphere flows to XLSX
 print("\n-----------Write unlinked flows to excel file")
 agribalyse_db_updated_simapro.write_excel(only_unlinked = True)
 
-# Show statistic of current linking of database import
-print("\n-----------Linking statistics of current database import")
-agribalyse_db_updated_simapro.statistics()
-print()
-    
+# Delete database first, if existing
+if agribalyse_db_name_updated_simapro in bw2data.databases:
+    print("\n-----------Delete database: " + agribalyse_db_name_updated_simapro)
+    del bw2data.databases[agribalyse_db_name_updated_simapro]
+
 # Write database
 print("\n-----------Write database: " + agribalyse_db_name_updated_simapro)
-agribalyse_db_updated_simapro.write_database(overwrite = False) # !!! Uncomment
+agribalyse_db_updated_simapro.write_database(overwrite = False)
 print()
 
 # Free up memory
@@ -891,38 +960,7 @@ del agribalyse_db_updated_simapro
 
 
 
-#%% Read World Food LCA Database again from SimaPro CSV files where we will then update the background
-wfldb_db_updated_simapro: bw2io.importers.base_lci.LCIImporter = import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths = [LCI_wfldb_simapro_folderpath / "WFLDB.CSV"],
-                                                                                                db_name = wfldb_db_name_updated_simapro,
-                                                                                                encoding = "latin-1",
-                                                                                                delimiter = "\t",
-                                                                                                verbose = True)
-wfldb_db_updated_simapro.apply_strategy(unregionalize_biosphere)
-
-wfldb_db_updated_simapro.apply_strategy(partial(link.link_biosphere_flows_externally,
-                                                biosphere_db_name = biosphere_db_name_simapro,
-                                                biosphere_db_name_unlinked = unlinked_biosphere_db_name,
-                                                other_biosphere_databases = None,
-                                                linking_order = None,
-                                                relink = False,
-                                                strip = True,
-                                                case_insensitive = True,
-                                                remove_special_characters = False,
-                                                verbose = True), verbose = True)
-
-wfldb_db_updated_simapro.apply_strategy(partial(migrate_from_excel_file,
-                                                excel_migration_filepath = LCI_wfldb_simapro_folderpath / "custom_migration_WFLDB.xlsx",
-                                                migrate_activities = False,
-                                                migrate_exchanges = True),
-                                        verbose = True)
-
-wfldb_db_updated_simapro.apply_strategy(partial(link.remove_linking,
-                                                production_exchanges = False,
-                                                substitution_exchanges = True,
-                                                technosphere_exchanges = True,
-                                                biosphere_exchanges = False), verbose = True)
-
-#%% Create the activity migration --> all ecoinvent v3.5 found in the background from WFLDB should be updated to ecoinvent v3.10, if possible
+#%% Create the WFDLB background activity migration --> all ecoinvent v3.5 found in the background from WFLDB should be updated to ecoinvent v3.10, if possible
 wfldb_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(wfldb_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
 
 # Load dataframe with manually checked activity flows
@@ -950,6 +988,12 @@ del wfldb_exchanges_to_migrate_to_ecoinvent, WFLDB_background_ei_migration, WFLD
 
 
 #%% Update the ecoinvent background activities in the World Food LCA database from v3.5 to v3.10 and register database
+wfldb_db_updated_simapro.apply_strategy(partial(link.remove_linking,
+                                                production_exchanges = False,
+                                                substitution_exchanges = True,
+                                                technosphere_exchanges = True,
+                                                biosphere_exchanges = False), verbose = True)
+
 # Apply activity migration
 wfldb_db_updated_simapro.apply_strategy(partial(migrate_from_json_file,
                                                 json_migration_filepath = filepath_WFLDB_background_ei_migration_data,
@@ -980,62 +1024,32 @@ wfldb_db_updated_simapro.apply_strategy(partial(link.link_activities_internally,
                                                 remove_special_characters = False,
                                                 verbose = True), verbose = True)
 
+
+# Show statistic of current linking of database import
+print("\n-----------Linking statistics of current database import")
+wfldb_n_datasets, wfldb_n_exchanges, wfldb_n_unlinked = wfldb_db_updated_simapro.statistics()
+print()
+
 # Write unlinked biosphere flows to XLSX
 print("\n-----------Write unlinked flows to excel file")
 wfldb_db_updated_simapro.write_excel(only_unlinked = True)
 
-# Show statistic of current linking of database import
-print("\n-----------Linking statistics of current database import")
-wfldb_db_updated_simapro.statistics()
-print()
-    
+# Delete database first, if existing
+if wfldb_db_name_updated_simapro in bw2data.databases:
+    print("\n-----------Delete database: " + wfldb_db_name_updated_simapro)
+    del bw2data.databases[wfldb_db_name_updated_simapro]
+
 # Write database
 print("\n-----------Write database: " + wfldb_db_name_updated_simapro)
-wfldb_db_updated_simapro.write_database(overwrite = False) # !!! Uncomment
+wfldb_db_updated_simapro.write_database(overwrite = False)
 print()
 
 # Free up memory
 del wfldb_db_updated_simapro
 
 
-#%% Read SALCA again from SimaPro CSV files where we will then update the background
-salca_db_updated_simapro: bw2io.importers.base_lci.LCIImporter = import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths = [LCI_ecoinvent_simapro_folderpath / "ECO.CSV"],
-                                                                                                db_name = salca_db_name_updated_simapro,
-                                                                                                encoding = "latin-1",
-                                                                                                delimiter = "\t",
-                                                                                                verbose = True)
-salca_db_updated_simapro.apply_strategy(unregionalize_biosphere)
 
-salca_db_updated_simapro.apply_strategy(partial(migrate_from_excel_file,
-                                                excel_migration_filepath = LCI_ecoinvent_simapro_folderpath / "custom_migration_ECO.xlsx",
-                                                migrate_activities = False,
-                                                migrate_exchanges = True),
-                                        verbose = True)
-
-salca_db_updated_simapro.apply_strategy(partial(select_inventory_using_regex,
-                                                exclude = False,
-                                                include = True,
-                                                patterns = SALCA_patterns,
-                                                case_sensitive = True))
-
-salca_db_updated_simapro.apply_strategy(partial(link.link_biosphere_flows_externally,
-                                                biosphere_db_name = biosphere_db_name_simapro,
-                                                biosphere_db_name_unlinked = unlinked_biosphere_db_name,
-                                                other_biosphere_databases = None,
-                                                linking_order = None,
-                                                relink = False,
-                                                strip = True,
-                                                case_insensitive = True,
-                                                remove_special_characters = False,
-                                                verbose = True), verbose = True)
-
-salca_db_updated_simapro.apply_strategy(partial(link.remove_linking,
-                                                production_exchanges = False,
-                                                substitution_exchanges = True,
-                                                technosphere_exchanges = True,
-                                                biosphere_exchanges = False), verbose = True)
-
-#%% Create the activity migration --> all ecoinvent v3.10 found in the background from SALCA should be updated to ecoinvent v3.10 from XML, if possible
+#%% Create the SALCA background activity migration --> all ecoinvent v3.10 found in the background from SALCA should be updated to ecoinvent v3.10 from XML, if possible
 salca_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(salca_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
 
 # Load dataframe with manually checked activity flows
@@ -1062,12 +1076,18 @@ with open(filepath_SALCA_background_ei_migration_data, "w") as outfile:
 del salca_exchanges_to_migrate_to_ecoinvent, SALCA_background_ei_migration, SALCA_background_ei_migration_in_json_format
 
 #%% Update the ecoinvent background activities in the SALCA database from v3.10 to v3.10 (XML) and register database
+salca_db_updated_simapro.apply_strategy(partial(link.remove_linking,
+                                                production_exchanges = False,
+                                                substitution_exchanges = True,
+                                                technosphere_exchanges = True,
+                                                biosphere_exchanges = False), verbose = True)
+
 # Apply activity migration
 salca_db_updated_simapro.apply_strategy(partial(migrate_from_json_file,
                                                 json_migration_filepath = filepath_SALCA_background_ei_migration_data,
                                                 migrate_activities = False,
                                                 migrate_exchanges = True),
-                                            verbose = True)
+                                        verbose = True)
 
 # Link to ecoinvent and wfldb externally
 salca_db_updated_simapro.apply_strategy(partial(link.link_activities_externally,
@@ -1092,73 +1112,32 @@ salca_db_updated_simapro.apply_strategy(partial(link.link_activities_internally,
                                                 remove_special_characters = False,
                                                 verbose = True), verbose = True)
 
-salca_db_updated_simapro.apply_strategy(partial(link.link_activities_externally,
-                                        link_to_databases = (wfldb_db_name_updated_simapro,),
-                                        link_production_exchanges = False,
-                                        link_substitution_exchanges = False,
-                                        link_technosphere_exchanges = True,
-                                        relink = False,
-                                        strip = True,
-                                        case_insensitive = True,
-                                        remove_special_characters = False,
-                                        verbose = True), verbose = True)
-
-# Write unlinked biosphere flows to XLSX
-print("\n-----------Write unlinked flows to excel file")
-salca_db_updated_simapro.write_excel(only_unlinked = True)
-
 # Show statistic of current linking of database import
 print("\n-----------Linking statistics of current database import")
-salca_db_updated_simapro.statistics()
+salca_n_datasets, salca_n_exchanges, salca_n_unlinked = salca_db_updated_simapro.statistics()
 print()
+
+# Write unlinked biosphere flows to XLSX, if existing
+if salca_n_unlinked > 0:
+    print("\n-----------Write unlinked flows to excel file")
+    salca_db_updated_simapro.write_excel(only_unlinked = True)
+
+# Delete database first, if existing
+if salca_db_name_updated_simapro in bw2data.databases:
+    print("\n-----------Delete database: " + salca_db_name_updated_simapro)
+    del bw2data.databases[salca_db_name_updated_simapro]
     
 # Write database
 print("\n-----------Write database: " + salca_db_name_updated_simapro)
-salca_db_updated_simapro.write_database(overwrite = False) # !!! Uncomment
+salca_db_updated_simapro.write_database(overwrite = False)
 print()
 
 # Free up memory
 del salca_db_updated_simapro
 
 
-#%% Read AgriFootprint again from SimaPro CSV files where we will then update the background
-agrifootprint_db_updated_simapro: bw2io.importers.base_lci.LCIImporter = import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths = [LCI_agrifootprint_simapro_folderpath / "AGF.CSV"],
-                                                                                                        db_name = agrifootprint_db_name_updated_simapro,
-                                                                                                        encoding = "latin-1",
-                                                                                                        delimiter = "\t",
-                                                                                                        verbose = True)
-agrifootprint_db_updated_simapro.apply_strategy(unregionalize_biosphere)
 
-agrifootprint_db_updated_simapro.apply_strategy(partial(link.link_biosphere_flows_externally,
-                                                        biosphere_db_name = biosphere_db_name_simapro,
-                                                        biosphere_db_name_unlinked = unlinked_biosphere_db_name,
-                                                        other_biosphere_databases = None,
-                                                        linking_order = None,
-                                                        relink = False,
-                                                        strip = True,
-                                                        case_insensitive = True,
-                                                        remove_special_characters = False,
-                                                verbose = True), verbose = True)
-
-agrifootprint_db_updated_simapro.apply_strategy(partial(migrate_from_excel_file,
-                                                        excel_migration_filepath = LCI_agrifootprint_simapro_folderpath / "custom_migration_AGF_technosphere.xlsx",
-                                                        migrate_activities = False,
-                                                        migrate_exchanges = True),
-                                                verbose = True)
-
-agrifootprint_db_updated_simapro.apply_strategy(partial(migrate_from_excel_file,
-                                                        excel_migration_filepath = LCI_agrifootprint_simapro_folderpath / "custom_migration_AGF_substitution.xlsx",
-                                                        migrate_activities = False,
-                                                        migrate_exchanges = True),
-                                                verbose = True)
-
-agrifootprint_db_updated_simapro.apply_strategy(partial(link.remove_linking,
-                                                        production_exchanges = False,
-                                                        substitution_exchanges = True,
-                                                        technosphere_exchanges = True,
-                                                        biosphere_exchanges = False), verbose = True)
-
-#%% Create the activity migration --> all ecoinvent v3.8 found in the background from AgriFootprint should be updated to ecoinvent v3.10, if possible
+#%% Create the Agrifootprint activity migration --> all ecoinvent v3.8 found in the background from AgriFootprint should be updated to ecoinvent v3.10, if possible
 agrifootprint_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(agrifootprint_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
 
 # Load dataframe with manually checked activity flows
@@ -1186,6 +1165,12 @@ del agrifootprint_exchanges_to_migrate_to_ecoinvent, AGF_background_ei_migration
 
 
 #%% Update the ecoinvent background activities in the AgriFootprint database from v3.8 to v3.10 and register database
+agrifootprint_db_updated_simapro.apply_strategy(partial(link.remove_linking,
+                                                        production_exchanges = False,
+                                                        substitution_exchanges = True,
+                                                        technosphere_exchanges = True,
+                                                        biosphere_exchanges = False), verbose = True)
+
 # Apply activity migration
 agrifootprint_db_updated_simapro.apply_strategy(partial(migrate_from_json_file,
                                                         json_migration_filepath = filepath_AGF_background_ei_migration_data,
@@ -1216,18 +1201,24 @@ agrifootprint_db_updated_simapro.apply_strategy(partial(link.link_activities_int
                                                         remove_special_characters = False,
                                                         verbose = True), verbose = True)
 
+
+# Show statistic of current linking of database import
+print("\n-----------Linking statistics of current database import")
+agrifootprint_n_datasets, agrifootprint_n_exchanges, agrifootprint_n_unlinked = agrifootprint_db_updated_simapro.statistics()
+print()
+
 # Write unlinked biosphere flows to XLSX
 print("\n-----------Write unlinked flows to excel file")
 agrifootprint_db_updated_simapro.write_excel(only_unlinked = True)
 
-# Show statistic of current linking of database import
-print("\n-----------Linking statistics of current database import")
-agrifootprint_db_updated_simapro.statistics()
-print()
-    
+# Delete database first, if existing
+if agrifootprint_db_name_updated_simapro in bw2data.databases:
+    print("\n-----------Delete database: " + agrifootprint_db_name_updated_simapro)
+    del bw2data.databases[agrifootprint_db_name_updated_simapro]
+
 # Write database
 print("\n-----------Write database: " + agrifootprint_db_name_updated_simapro)
-agrifootprint_db_updated_simapro.write_database(overwrite = False) # !!! Uncomment
+agrifootprint_db_updated_simapro.write_database(overwrite = False)
 print()
 
 # Free up memory
