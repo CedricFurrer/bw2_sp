@@ -70,11 +70,11 @@ output_path: pathlib.Path = pathlib.Path(bw2data.projects.output_dir)
 #%% Defaults for key variables
 biosphere_db_name_simapro: str = "biosphere3 - from SimaPro"
 unlinked_biosphere_db_name: str = biosphere_db_name_simapro + " - unlinked"
-ecoinvent_db_name_simapro: str = "ecoinvent v3.10 - SimaPro"
-agribalyse_db_name_simapro: str = "Agribalyse v3.1 - SimaPro"
-agrifootprint_db_name_simapro: str = "AgriFootprint v6.3 - SimaPro"
-wfldb_db_name_simapro: str = "World Food LCA Database v3.5 - SimaPro"
-salca_db_name_simapro: str = "SALCA Database v3.10"
+ecoinvent_db_name_simapro: str = "ecoinvent v3.11 Cut-off - SimaPro"
+agribalyse_db_name_simapro: str = "Agribalyse v3.2 - SimaPro (background ecoinvent v3.9.1)"
+agrifootprint_db_name_simapro: str = "AgriFootprint v6.3 - SimaPro (background ecoinvent v3.8)"
+wfldb_db_name_simapro: str = "World Food LCA Database v3.5 - SimaPro (background ecoinvent v3.5)"
+salca_db_name_simapro: str = "SALCA Database v3.11 (background ecoinvent v3.11)"
 
 #%% Import SimaPro LCIA methods and create SimaPro biosphere database
 methods: list[dict] = import_SimaPro_LCIA_methods(path_to_SimaPro_CSV_LCIA_files = LCIA_SimaPro_CSV_folderpath,
@@ -184,24 +184,34 @@ ecoinvent_db_simapro.apply_strategy(partial(migrate_from_excel_file,
                                             migrate_exchanges = True),
                                     verbose = True)
 
+# Remove linking
+ecoinvent_db_simapro.apply_strategy(partial(link.remove_linking,
+                                            production_exchanges = True,
+                                            substitution_exchanges = True,
+                                            technosphere_exchanges = True,
+                                            biosphere_exchanges = True))
+
 # Make a deepcopy to use for importing SALCA inventories
 salca_db_simapro: bw2io.importers.base_lci.LCIImporter = bw2io.importers.base_lci.LCIImporter(salca_db_name_simapro)
 salca_db_simapro.data: list[dict] = copy.deepcopy(ecoinvent_db_simapro.data)
 
 # Specific patterns that are used to identify the SALCA inventories
-SALCA_patterns: list[str] = [
-                      "SALCA", # abbreviation to identify SALCA inventories
-                      "SLACA", # WOW... I mean come on...
-                      "WFLDB", # because why not finding WFLDB inventories in SALCA/ecoinvent?
-                      "maize silage, conservation, sect.", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to exclude it.
-                      "maize silage, horiz. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to exclude it.
-                      "maize silage, tow. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to exclude it.
-                      ]
+SALCA_patterns_to_exclude: list[str] = [
+                          "SALCA", # abbreviation to identify SALCA inventories
+                          "SLACA", # WOW... I mean come on...
+                          "at plant/CH mix", # some CH mixes that were created without the SALCA abbreviation
+                          "WFLDB", # because why not finding WFLDB inventories in SALCA/ecoinvent?
+                          "maize silage, conservation, sect.", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to exclude it.
+                          "maize silage, horiz. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to exclude it.
+                          "maize silage, tow. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to exclude it.
+                          "EI3AS", # specific inventories from ecoinvent that were adapted and do not really belong to ecoinvent
+                          # "Phosphate rock, as P2O5, beneficiated, dry", # Well...
+                          ]
 
 ecoinvent_db_simapro.apply_strategy(partial(select_inventory_using_regex,
                                             exclude = True,
                                             include = False,
-                                            patterns = SALCA_patterns,
+                                            patterns = SALCA_patterns_to_exclude,
                                             case_sensitive = True))
 
 # Link flows
@@ -248,24 +258,27 @@ print("\n------- Write database: " + ecoinvent_db_name_simapro)
 ecoinvent_db_simapro.write_database()
 
 # Free up memory
-del ecoinvent_db_simapro
+del unlinked_biosphere_flows, ecoinvent_db_simapro
 
 #%% Import SALCA LCI database from SimaPro
 
 # Specific patterns that are used to identify the SALCA inventories
-SALCA_patterns: list[str] = [
-                      "SALCA", # abbreviation to identify SALCA inventories
-                      "SLACA", # WOW... I mean come on...
-                      # "WFLDB", # because why not finding WFLDB inventories in SALCA/ecoinvent?
-                      "maize silage, conservation, sect.", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
-                      "maize silage, horiz. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
-                      "maize silage, tow. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
-                      ]
+SALCA_patterns_to_include: list[str] = [
+                          "SALCA", # abbreviation to identify SALCA inventories
+                          "SLACA", # WOW... I mean come on...
+                          # "WFLDB", # because why not finding WFLDB inventories in SALCA/ecoinvent?
+                          "at plant/CH mix", # some CH mixes that were created without the SALCA abbreviation
+                          "maize silage, conservation, sect.", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
+                          "maize silage, horiz. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
+                          "maize silage, tow. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
+                          "EI3AS", # specific inventories from ecoinvent that were adapted and do not really belong to ecoinvent
+                          "Phosphate rock, as P2O5, beneficiated, dry", # Well...
+                          ]
 
 salca_db_simapro.apply_strategy(partial(select_inventory_using_regex,
                                         exclude = False,
                                         include = True,
-                                        patterns = SALCA_patterns,
+                                        patterns = SALCA_patterns_to_include,
                                         case_sensitive = True))
 
 # Rename the database of the activities and the production exchanges
@@ -278,13 +291,6 @@ salca_db_simapro.apply_strategy(partial(migrate_from_excel_file,
                                         migrate_activities = False,
                                         migrate_exchanges = True),
                                 verbose = True)
-
-# Remove linking
-salca_db_simapro.apply_strategy(partial(link.remove_linking,
-                                        production_exchanges = True,
-                                        substitution_exchanges = True,
-                                        technosphere_exchanges = True,
-                                        biosphere_exchanges = True))
 
 # Link flows
 salca_db_simapro.apply_strategy(partial(link.link_biosphere_flows_externally,
@@ -302,18 +308,68 @@ salca_db_simapro.apply_strategy(partial(link.link_activities_internally,
                                         production_exchanges = True,
                                         substitution_exchanges = True,
                                         technosphere_exchanges = True,
-                                        relink = True,
+                                        relink = False,
                                         strip = True,
                                         case_insensitive = True,
                                         remove_special_characters = False,
                                         verbose = True), verbose = True)
 
 salca_db_simapro.apply_strategy(partial(link.link_activities_externally,
-                                        link_to_databases = (ecoinvent_db_name_simapro, wfldb_db_name_simapro),
+                                        link_to_databases = (wfldb_db_name_simapro,),
                                         link_production_exchanges = False,
                                         link_substitution_exchanges = False,
                                         link_technosphere_exchanges = True,
-                                        relink = True,
+                                        relink = False,
+                                        strip = True,
+                                        case_insensitive = True,
+                                        remove_special_characters = False,
+                                        verbose = True), verbose = True)
+
+salca_n_datasets, salca_n_exchanges, salca_n_unlinked = salca_db_simapro.statistics()
+exchanges_that_are_salca_inventories: list[dict] = [exc for m in salca_db_simapro for exc in m["exchanges"] if "input" not in exc and exc["type"] in ["technosphere", "substitution"] and not exc.get("is_ecoinvent", False)]
+
+salca_inventories_to_be_added: dict = {}
+ecoinvent_db_from_background = {(m["name"], m["location"], m["unit"]): m for m in bw2data.Database(ecoinvent_db_name_simapro)}
+
+for exc in exchanges_that_are_salca_inventories:
+    
+    ID: tuple[str, str, str] = (exc["name"], exc["location"], exc["unit"])
+    
+    if ID in salca_inventories_to_be_added:
+        continue
+    
+    act: dict = {**ecoinvent_db_from_background[ID].as_dict(), **{"exchanges": [m.as_dict() for m in ecoinvent_db_from_background[ID].exchanges()]}}
+    salca_inventories_to_be_added[ID]: dict = act
+
+salca_db_simapro.data += list(salca_inventories_to_be_added.values())
+
+# The new activities imported from ecoinvent need to be renamed
+salca_db_simapro.apply_strategy(partial(change_database_name,
+                                        new_db_name = salca_db_name_simapro,
+                                        ))
+
+salca_db_simapro.apply_strategy(partial(link.remove_linking,
+                                        production_exchanges = True,
+                                        substitution_exchanges = True,
+                                        technosphere_exchanges = True,
+                                        biosphere_exchanges = False))
+
+salca_db_simapro.apply_strategy(partial(link.link_activities_internally,
+                                        production_exchanges = True,
+                                        substitution_exchanges = True,
+                                        technosphere_exchanges = True,
+                                        relink = False,
+                                        strip = True,
+                                        case_insensitive = True,
+                                        remove_special_characters = False,
+                                        verbose = True), verbose = True)
+
+salca_db_simapro.apply_strategy(partial(link.link_activities_externally,
+                                        link_to_databases = (wfldb_db_name_simapro, ecoinvent_db_name_simapro),
+                                        link_production_exchanges = False,
+                                        link_substitution_exchanges = False,
+                                        link_technosphere_exchanges = True,
+                                        relink = False,
                                         strip = True,
                                         case_insensitive = True,
                                         remove_special_characters = False,
@@ -342,7 +398,8 @@ print("\n------- Write database: " + salca_db_name_simapro)
 salca_db_simapro.write_database()
 
 # Free up memory
-del salca_db_simapro
+del salca_db_simapro, unlinked_biosphere_flows
+
 
 #%% Import Agribalyse LCI database from SimaPro
 agribalyse_db_simapro: bw2io.importers.base_lci.LCIImporter = import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths = [LCI_agribalyse_simapro_folderpath / "AGB.CSV"],
@@ -474,13 +531,11 @@ end_time = datetime.now()
 
 print('Time elapsed' , str(round((end_time - start_time).seconds/60)), 'minutes')
 
-#%% Example of how to run an LCA calculation
-# #%% Run LCA calculation
+# #%% Example of how to run an LCA calculation
 
-# import sys
-# if 'bw25' in sys.prefix :
+# if bw2data.__version__[0] >= 4:
 #     from calculation_bw25 import LCA_Calculation
-# elif 'bw2_ab' in sys.prefix :
+# else:
 #     from calculation_bw2 import LCA_Calculation
 # from exporter import export_SimaPro_CSV
 
