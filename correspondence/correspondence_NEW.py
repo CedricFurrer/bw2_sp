@@ -21,6 +21,9 @@ class Correspondence():
         
         self.FROM_definer: str = "FROM"
         self.TO_definer: str = "TO"
+        self.whitespace_replacer: str = "_"
+        self.version_replacer: str = "."
+        
         self.ecoinvent_model_type: str = ecoinvent_model_type
         self.ecoinvent_model_type_cutoff: str = "cutoff"
         self.ecoinvent_model_type_apos: str = "apos"
@@ -28,6 +31,9 @@ class Correspondence():
         self.allowed_ecoinvent_model_types: list[str] = [self.ecoinvent_model_type_cutoff, self.ecoinvent_model_type_apos, self.ecoinvent_model_type_consequential]
         
         self.key_name_version: str = "version"
+        self.key_name_version_uppered: str = self.key_name_version[0].upper() + self.key_name_version[1:].lower()
+        self.key_name_FROM_version: str = self.whitespace_replacer.join((self.FROM_definer, self.key_name_version))
+        self.key_name_TO_version: str = self.whitespace_replacer.join((self.TO_definer, self.key_name_version))
         self.key_name_activity_uuid: str = "activity_uuid"
         self.key_name_reference_product_uuid: str = "reference_product_uuid"
         self.key_name_activity_name: str = "activity_name"
@@ -35,19 +41,34 @@ class Correspondence():
         self.key_name_location_name: str = "location"
         self.key_name_unit_name: str = "unit"
         self.key_name_multiplier: str = "multiplier"
-        self.whitespace_replacer: str = "_"
+        self.key_name_multiplier_uppered: str = self.key_name_multiplier[0].upper() + self.key_name_multiplier[1:].lowered()
+        self.key_name_multiplier_uppered_plural: str = self.key_name_multiplier_uppered + "s"
         
+        self.raw_data: dict = {}
+        self.interlinked_data: dict = {}
+        self.check_multipliers: dict = {}
+        
+        self.identifier_1: tuple[str, str] = tuple([self.key_name_activity_uuid, self.key_name_reference_product_uuid])
+        self.identifier_2: tuple[str, str, str, str] = tuple([self.key_name_activity_name, self.key_name_reference_product_name, self.key_name_location_name, self.key_name_unit_name])
+        self.identifier_1_uppered: tuple[str, str] = tuple([m[0].upper() + m[1:].lower() for m in self.identifier_1])
+        self.identifier_2_uppered: tuple[str, str, str, str] = tuple([m[0].upper() + m[1:].lower() for m in self.identifier_2])
+        self.FROM_identifier_1: tuple[str, str] = tuple([self.whitespace_replacer.join(self.FROM_definer, m) for m in self.identifier_1])
+        self.FROM_identifier_2: tuple[str, str] = tuple([self.whitespace_replacer.join(self.TO_definer, m) for m in self.identifier_2])
+        self.TO_identifier_1: tuple[str, str] = tuple([self.whitespace_replacer.join(self.FROM_definer, m) for m in self.identifier_1])
+        self.TO_identifier_2: tuple[str, str] = tuple([self.whitespace_replacer.join(self.TO_definer, m) for m in self.identifier_2])
+
+
         # Raise error, if model type is None of the defaults
         if ecoinvent_model_type not in self.allowed_ecoinvent_model_types:
             raise ValueError("Current model type '{}' is not allowed. Use one of the following: 'cutoff', 'apos' or 'consequential'".format(self.ecoinvent_model_type, self.allowed_ecoinvent_model_types))
         
         
         
-    def harmonize_dataframe(self,
-                            filepath_correspondence_excel: pathlib.Path,
-                            FROM_version: tuple[int, int],
-                            TO_version: tuple[int, int],
-                            ):
+    def read_correspondence_dataframe(self,
+                                      filepath_correspondence_excel: pathlib.Path,
+                                      FROM_version: tuple[int, int],
+                                      TO_version: tuple[int, int],
+                                      ):
         
         # Names of sheets in the excel file depending on the ecoinvent model type
         sheet_name_mapping: dict = {self.ecoinvent_model_type_cutoff: ["Cut-off", "Cut-Off", "cut-off", "cutoff"],
@@ -65,19 +86,13 @@ class Correspondence():
         loc_cols: list[str] = ["geography", "Geography"]
         unit_cols: list[str] = ["unit", "Unit"]
         mult_cols: list[str] = ["amount of the replacement", "Replacement amount", "replacement amount", "replacement share"]
-        
-        # Initialize
-        data: dict = {}
-        
-        # Initialize a variable to check for multipliers
-        check_multipliers: dict = {}
     
         # Make a version string, based on the version tuple from the element
-        FROM_version_str: str = ".".join([str(m) for m in FROM_version])
-        TO_version_str: str = ".".join([str(m) for m in TO_version])
+        FROM_version_str: str = self.version_replacer.join([str(m) for m in FROM_version])
+        TO_version_str: str = self.version_replacer.join([str(m) for m in TO_version])
         
         # Read the correspondence excel file for the current versions
-        excel: dict[pd.DataFrame] = pd.read_excel(filepath_correspondence_file, sheet_name = None)
+        excel: dict[pd.DataFrame] = pd.read_excel(filepath_correspondence_excel, sheet_name = None)
         
         # Only use the sheet that we want to use --> either cut-off, apos or consequential
         # Because the files use different names for the systems, we need to search for the appropriate one
@@ -115,12 +130,12 @@ class Correspondence():
             if head in doubles and head in seen:
                 
                 # If it is a double and it has been seen, that means the current header is the one belonging to the 'TO'
-                new_header += [head + "_" + TO_version_str]
+                new_header += [head + self.whitespace_replacer + TO_version_str]
             
             elif head in doubles:
                 
                 # If it has NOT been seen but it is a double, it is the one from 'FROM'
-                new_header += [head + "_" + FROM_version_str]
+                new_header += [head + self.whitespace_replacer + FROM_version_str]
                 
             else:
                 # Otherwise, we leave the head as it is and append it to the list
@@ -128,7 +143,7 @@ class Correspondence():
             
             # At the end of the loop, we update the variables
             seen += [head]
-            all_headers += [head]
+            # all_headers += [head]
         
         
         # We now remove the first rows which we don't need anymore
@@ -138,65 +153,65 @@ class Correspondence():
         df.columns = new_header
         
         # Check if column names exist and extract the column names in the excel file
-        FROM_colname_actID: str = self.check_if_at_least_one_item_exists_in_list(items = [self.FROM_definer + m for m in actID_cols],
-                                                                                 in_list = new_header,
-                                                                                 raise_error_if_not_exist = True,
-                                                                                 return_element_if_not_exists = None)
+        FROM_colname_actID: str = self.check_if_at_least_one_item_exists_in_list_and_return_first_occurence(items = [self.whitespace_replacer.join((m, FROM_version_str)) for m in actID_cols],
+                                                                                                            in_list = new_header,
+                                                                                                            raise_error_if_not_exist = True,
+                                                                                                            return_element_if_not_exists = None)
         
-        TO_colname_actID: str = self.check_if_at_least_one_item_exists_in_list(items = [self.TO_definer + m for m in actID_cols],
-                                                                               in_list = new_header,
-                                                                               raise_error_if_not_exist = True,
-                                                                               return_element_if_not_exists = None)
+        TO_colname_actID: str = self.check_if_at_least_one_item_exists_in_list_and_return_first_occurence(items = [self.whitespace_replacer.join((m, TO_version_str)) for m in actID_cols],
+                                                                                                          in_list = new_header,
+                                                                                                          raise_error_if_not_exist = True,
+                                                                                                          return_element_if_not_exists = None)
         
-        FROM_colname_prodID: (str | None) = self.check_if_at_least_one_item_exists_in_list(items = [self.FROM_definer + m for m in prodID_cols],
-                                                                                           in_list = new_header,
-                                                                                           raise_error_if_not_exist = False,
-                                                                                           return_element_if_not_exists = None)
+        FROM_colname_prodID: (str | None) = self.check_if_at_least_one_item_exists_in_list_and_return_first_occurence(items = [self.whitespace_replacer.join((m, FROM_version_str)) for m in prodID_cols],
+                                                                                                                      in_list = new_header,
+                                                                                                                      raise_error_if_not_exist = False,
+                                                                                                                      return_element_if_not_exists = None)
         
-        TO_colname_prodID: (str | None) = self.check_if_at_least_one_item_exists_in_list(items = [self.TO_definer + m for m in prodID_cols],
-                                                                                         in_list = new_header,
-                                                                                         raise_error_if_not_exist = False,
-                                                                                         return_element_if_not_exists = None)
+        TO_colname_prodID: (str | None) = self.check_if_at_least_one_item_exists_in_list_and_return_first_occurence(items = [self.whitespace_replacer.join((m, TO_version_str)) for m in prodID_cols],
+                                                                                                                    in_list = new_header,
+                                                                                                                    raise_error_if_not_exist = False,
+                                                                                                                    return_element_if_not_exists = None)
         
-        FROM_colname_ref: str = self.check_if_at_least_one_item_exists_in_list(items = [self.FROM_definer + m for m in ref_cols],
-                                                                               in_list = new_header,
-                                                                               raise_error_if_not_exist = True,
-                                                                               return_element_if_not_exists = None)
+        FROM_colname_ref: str = self.check_if_at_least_one_item_exists_in_list_and_return_first_occurence(items = [self.whitespace_replacer.join((m, FROM_version_str)) for m in ref_cols],
+                                                                                                          in_list = new_header,
+                                                                                                          raise_error_if_not_exist = True,
+                                                                                                          return_element_if_not_exists = None)
         
-        TO_colname_ref: str = self.check_if_at_least_one_item_exists_in_list(items = [self.TO_definer + m for m in ref_cols],
-                                                                             in_list = new_header,
-                                                                             raise_error_if_not_exist = True,
-                                                                             return_element_if_not_exists = None)
+        TO_colname_ref: str = self.check_if_at_least_one_item_exists_in_list_and_return_first_occurence(items = [self.whitespace_replacer.join((m, TO_version_str)) for m in ref_cols],
+                                                                                                        in_list = new_header,
+                                                                                                        raise_error_if_not_exist = True,
+                                                                                                        return_element_if_not_exists = None)
         
-        FROM_colname_act: str = self.check_if_at_least_one_item_exists_in_list(items = [self.FROM_definer + m for m in act_cols],
-                                                                               in_list = new_header,
-                                                                               raise_error_if_not_exist = True,
-                                                                               return_element_if_not_exists = None)
+        FROM_colname_act: str = self.check_if_at_least_one_item_exists_in_list_and_return_first_occurence(items = [self.whitespace_replacer.join((m, FROM_version_str)) for m in act_cols],
+                                                                                                          in_list = new_header,
+                                                                                                          raise_error_if_not_exist = True,
+                                                                                                          return_element_if_not_exists = None)
         
-        TO_colname_act: str = self.check_if_at_least_one_item_exists_in_list(items = [self.TO_definer + m for m in act_cols],
-                                                                             in_list = new_header,
-                                                                             raise_error_if_not_exist = True,
-                                                                             return_element_if_not_exists = None)
+        TO_colname_act: str = self.check_if_at_least_one_item_exists_in_list_and_return_first_occurence(items = [self.whitespace_replacer.join((m, TO_version_str)) for m in act_cols],
+                                                                                                        in_list = new_header,
+                                                                                                        raise_error_if_not_exist = True,
+                                                                                                        return_element_if_not_exists = None)
         
-        FROM_colname_loc: str = self.check_if_at_least_one_item_exists_in_list(items = [self.FROM_definer + m for m in loc_cols],
-                                                                               in_list = new_header,
-                                                                               raise_error_if_not_exist = True,
-                                                                               return_element_if_not_exists = None)
+        FROM_colname_loc: str = self.check_if_at_least_one_item_exists_in_list_and_return_first_occurence(items = [self.whitespace_replacer.join((m, FROM_version_str)) for m in loc_cols],
+                                                                                                          in_list = new_header,
+                                                                                                          raise_error_if_not_exist = True,
+                                                                                                          return_element_if_not_exists = None)
         
-        TO_colname_loc: str = self.check_if_at_least_one_item_exists_in_list(items = [self.TO_definer + m for m in loc_cols],
-                                                                             in_list = new_header,
-                                                                             raise_error_if_not_exist = True,
-                                                                             return_element_if_not_exists = None)
+        TO_colname_loc: str = self.check_if_at_least_one_item_exists_in_list_and_return_first_occurence(items = [self.whitespace_replacer.join((m, TO_version_str)) for m in loc_cols],
+                                                                                                        in_list = new_header,
+                                                                                                        raise_error_if_not_exist = True,
+                                                                                                        return_element_if_not_exists = None)
         
-        FROM_colname_unit: str = self.check_if_at_least_one_item_exists_in_list(items = [self.FROM_definer + m for m in unit_cols],
-                                                                                in_list = new_header,
-                                                                                raise_error_if_not_exist = True,
-                                                                                return_element_if_not_exists = None)
+        FROM_colname_unit: str = self.check_if_at_least_one_item_exists_in_list_and_return_first_occurence(items = [self.whitespace_replacer.join((m, FROM_version_str)) for m in unit_cols],
+                                                                                                           in_list = new_header,
+                                                                                                           raise_error_if_not_exist = True,
+                                                                                                           return_element_if_not_exists = None)
         
-        TO_colname_unit: str = self.check_if_at_least_one_item_exists_in_list(items = [self.TO_definer + m for m in unit_cols],
-                                                                              in_list = new_header,
-                                                                              raise_error_if_not_exist = True,
-                                                                              return_element_if_not_exists = None)
+        TO_colname_unit: str = self.check_if_at_least_one_item_exists_in_list_and_return_first_occurence(items = [self.whitespace_replacer.join((m, TO_version_str)) for m in unit_cols],
+                                                                                                         in_list = new_header,
+                                                                                                         raise_error_if_not_exist = True,
+                                                                                                         return_element_if_not_exists = None)
         
         # Extract column for the multiplier separately
         colname_mult_orig: list[str] = [m for m in mult_cols if m in new_header]
@@ -206,6 +221,18 @@ class Correspondence():
         
         # Use the first element as column name for multiplier
         colname_mult: (int | float | str) = colname_mult_orig[0]
+        
+        if FROM_version not in self.raw_data:
+            self.raw_data[FROM_version]: dict = {}
+            
+        if TO_version not in self.raw_data[FROM_version]:
+            self.raw_data[FROM_version][TO_version]: dict = {}
+        
+        if FROM_version not in self.check_multipliers:
+            self.check_multipliers[FROM_version]: dict = {}
+            
+        if TO_version not in self.check_multipliers[FROM_version]:
+            self.check_multipliers[FROM_version][TO_version]: dict = {}
         
         # Loop through all entries in the dataframe
         for idx, row in df.iterrows():
@@ -251,8 +278,7 @@ class Correspondence():
             
             
             # Create FROM_ID
-            FROM_ID: tuple = (FROM_version,
-                              FROM_actID,
+            FROM_ID: tuple = (FROM_actID,
                               FROM_prodID,
                               FROM_ref,
                               FROM_act,
@@ -261,8 +287,7 @@ class Correspondence():
                               )
                                
             # Create TO_ID
-            TO_ID: tuple = (TO_version,
-                            TO_actID,
+            TO_ID: tuple = (TO_actID,
                             TO_prodID,
                             TO_ref,
                             TO_act,
@@ -271,12 +296,12 @@ class Correspondence():
                             )
             
             # Initialize ID in dictionary if not yet existing
-            if FROM_ID + (TO_version,) not in check_multipliers:
-                check_multipliers[FROM_ID + (TO_version,)]: float = float(multiplier)
+            if FROM_ID not in self.check_multipliers[FROM_version][TO_version]:
+                self.check_multipliers[FROM_version][TO_version][FROM_ID]: float = float(multiplier)
                 
             else:
                 # Add to multipliers checking dictionary
-                check_multipliers[FROM_ID + (TO_version,)] += multiplier
+                self.check_multipliers[FROM_version][TO_version][FROM_ID] += float(multiplier)
             
             
             # !!! We need to do the inverse for the multiplier. Do we???
@@ -291,10 +316,10 @@ class Correspondence():
             ID: tuple = FROM_ID + TO_ID
             
             # Raise error if key is already available
-            assert ID not in data, "Key is already present. Error occured for key '{}' when reading file '{}'".format(ID, filepath_correspondence_excel)
+            assert ID not in self.raw_data[FROM_version][TO_version], "Key is already present. Error occured for key '{}' when reading file '{}'".format(ID, filepath_correspondence_excel)
                 
             # Append to data dictionary
-            data[ID]: dict = {
+            self.raw_data[FROM_version][TO_version][ID]: dict = {
                 self.whitespace_replacer.join((self.FROM_definer, self.key_name_version)): FROM_version,
                 self.whitespace_replacer.join((self.FROM_definer, self.key_name_activity_uuid)): FROM_actID,
                 self.whitespace_replacer.join((self.FROM_definer, self.key_name_reference_product_uuid)): FROM_prodID,
@@ -302,9 +327,7 @@ class Correspondence():
                 self.whitespace_replacer.join((self.FROM_definer, self.key_name_reference_product_name)): FROM_ref,
                 self.whitespace_replacer.join((self.FROM_definer, self.key_name_location_name)): FROM_loc,
                 self.whitespace_replacer.join((self.FROM_definer, self.key_name_unit_name)): FROM_unit,
-                
                 self.key_name_multiplier: multiplier,
-                
                 self.whitespace_replacer.join((self.TO_definer, self.key_name_version)): TO_version,
                 self.whitespace_replacer.join((self.TO_definer, self.key_name_activity_uuid)): TO_actID,
                 self.whitespace_replacer.join((self.TO_definer, self.key_name_reference_product_uuid)): TO_prodID,
@@ -313,8 +336,18 @@ class Correspondence():
                 self.whitespace_replacer.join((self.TO_definer, self.key_name_location_name)): TO_loc,
                 self.whitespace_replacer.join((self.TO_definer, self.key_name_unit_name)): TO_unit,
                 }
+    
+    def check_if_multipliers_sum_to_1(self) -> list[dict]:
         
+        problematic_data: dict = {(FROM_version, ID, TO_version): v for FROM_version, m in self.check_multipliers.items() for TO_version, n in m.items() for ID, v in n.items() if (v < 0.99 or v > 1.01) and (v != 0) and ("" not in ID) and (None not in ID)}
+        multipliers_not_summing_to_1: list[dict] = []
         
+        for (FROM_version, ID, TO_version), multiplier_summed in problematic_data.items():
+            multipliers_not_summing_to_1 += [{**self.raw_data[FROM_version][TO_version][ID], **{"multiplier_summed": multiplier_summed}}]
+        
+        return multipliers_not_summing_to_1
+        
+
     # Used here to identify if columns exist or not
     def check_if_at_least_one_item_exists_in_list_and_return_first_occurence(self,
                                                                              items: list,
@@ -334,37 +367,175 @@ class Correspondence():
         
         # Return the elements and replace if they are not found
         return found[0] if len(found) > 0 else return_element_if_not_exists
+    
+    
+    def interlink_correspondence_files(self,
+                                       FROM_version: tuple[int, int],
+                                       TO_version: tuple[int, int]) -> None:
         
-        # # Define function to find column names for the different types of information that we need
-        # def find_colnames(possible_cols: list, raise_error_if_no_columns_were_found: bool = True) -> (str | None, str | None):
+        # Go on if there is no 
+        if FROM_version not in self.raw_data:
+            return
+        
+        # Return if FROM_version is greater than the version we should map to
+        if FROM_version >= TO_version:
+            return
+        
+        # Write all data to a long list
+        all_data: list[dict] = [{**{self.key_name_FROM_version: a},
+                                 **e, **{self.key_name_TO_version: c}} for a, b in self.raw_data.items() for c, d in b.items() for _, e in d.items()]
+        
+        # Query the data we want to map, excluding the entries that have a multiplier of 0
+        data: list[dict] = [m for m in all_data if m[self.key_name_FROM_version] == FROM_version and m[self.key_name_multiplier != 0]]    
+        
+        df_all_data: pd.DataFrame = pd.DataFrame(all_data).replace({"": None})
+        df_data: pd.DataFrame = pd.DataFrame(data).replace({"": None})
+        
+        print("Interlinking versions:", FROM_version, "->", TO_version)
+
+        counter: int = 1
+        counters: list[int] = []
+        
+        # Go into a while loop
+        while True:
             
-        #     # For each possible column, check if it is available in the new header and gather in the list
-        #     found = [(m + "_" + FROM_version_str, m + "_" + TO_version_str) for m in possible_cols if m + "_" + FROM_version_str in new_header and m + "_" + FROM_version_str in new_header]
+            # Add current counter to list
+            counters += [counter]
             
-        #     # Raise error, if specified and return
-        #     if raise_error_if_no_columns_were_found:
+            # First set of columns to join the dataframes on
+            left_on_1: list[str] = [self.whitespace_replacer.join((m, str(counter))) for m in self.TO_identifier_2]
+            right_on_1: list[str] = [self.whitespace_replacer.join((m, str(counter + 1))) for m in self.FROM_identifier_2]
+            
+            # Exclude rows that have incomplete identifier columns
+            mask_1: pd.Series = df_data[left_on_1].isna().any(axis = 1) | (df_data[left_on_1] == "").any(axis = 1)
+            excluded_1: pd.DataFrame = df_data.copy()[mask_1]
+            df_data: pd.DataFrame = df_data.copy()[~mask_1]
+            
+            # Merge data on first identifier columns
+            df_data. pd.DataFrame = df_data.copy().merge(
+                df_all_data.add_suffix(self.whitespace_replacer + str(counter + 1)),
+                how = "left",
+                left_on = left_on_1,
+                right_on = right_on_1,
+            )
+            
+            # Check which of the columns were not properly matched
+            # We then continue with only the unmatched data and try to match it with the other identifier columns
+            unmatched: pd.Series = df_data[right_on_1].isna().any(axis = 1)
+            unmatched_df: pd.DataFrame = df_data[unmatched].drop(columns = df_data.filter(regex = self.whitespace_replacer + str(counter + 1) + "$").columns)
+            
+            # Second set of columns to join the dataframes on
+            left_on_2: list[str] = [self.whitespace_replacer.join((m, str(counter))) for m in self.TO_identifier_1]
+            right_on_2: list[str] = [self.whitespace_replacer.join((m, str(counter + 1))) for m in self.FROM_identifier_1]
+            
+            # Exclude rows that have incomplete identifier columns
+            mask_2: pd.Series = unmatched_df[left_on_2].isna().any(axis = 1) | (unmatched_df[left_on_2] == "").any(axis = 1)
+            excluded_2: pd.DataFrame = unmatched_df.copy()[mask_2]
+            unmatched_df: pd.DataFrame = unmatched_df.copy()[~mask_2]
+            
+            # Merge on second set of identifier columns
+            matched_df: pd.DataFrame = unmatched_df.merge(
+                df_all_data.add_suffix(self.whitespace_replacer + str(counter + 1)),
+                how = "left",
+                left_on = left_on_2,
+                right_on = right_on_2,
+            )
+            
+            # Lets combine everything again
+            # The unmatched, matched and excluded data
+            df_data: pd.DataFrame = pd.concat([df_data.copy()[~unmatched],
+                                               matched_df.copy(),
+                                               excluded_1.copy(),
+                                               excluded_2.copy()])
+            
+            # If we encounter only empty columns that have been newly attached to our df, that means we can end the while loop
+            if df_data[right_on_1 + right_on_2].isna().all().all():
                 
-        #         # Raise error if no columns were identified
-        #         assert len(found) > 0, "No columns found. Used possible columns '" + str(possible_cols) + "'. Error occured in file '" + str(filename) + "'" 
+                # We drop the last columns that were added again and then break the while loop
+                df_data: pd.DataFrame = df_data.drop(columns = df_data.filter(regex = self.whitespace_replacer + str(counter + 1) + "$").columns)
+                break
             
-        #         # Return the results from the first element --> FROM and TO
-        #         return found[0][0], found[0][1]
+            # The same happens if we have reached our final version we want to map to
+            if TO_version in set(df_data[self.whitespace_replacer.join((self.TO_definer, self.key_name_version, str(counter)))]):
+                
+                # We drop the last columns that were added again and then break the while loop
+                df_data: pd.DataFrame = df_data.drop(columns = df_data.filter(regex = self.whitespace_replacer + str(counter + 1) + "$").columns)
+                break
             
-        #     else:
-        #         # If column names have been found, return the results from the first element --> FROM and TO
-        #         if len(found) > 0:
-        #             return found[0][0], found[0][1]
-                
-        #         # Otherwise return None's
-        #         else:
-        #             return None, None
-                
+            # !!! This is purely a saftey step! In case that we would not end the while loop, we break it manually after n steps and raise an error
+            if counter == 50:
+                raise ValueError("Aborted manually, was not breaking out of the while loop!")
+            
+            # Raise counter at the end
+            counter += 1
+        
+        # Let's replace the NaN's with None's to better be able to work with!
+        df_data: pd.DataFrame = df_data.copy().replace({float("NaN"): None})
+        
+        # We construct the multiplier by multiplying all multipliers that were used ('prod')
+        df_data[self.key_name_multiplier_uppered]: pd.Series = df_data.copy().filter(regex = self.key_name_multipliers).prod(axis = 1).astype(float)
+        
+        # We then add the current dataframe as raw results to the dictionary
+        self.df_interlinktion_raw[(FROM_version, TO_version)] = df_data.copy()
+        
+        # In order to understand what has happened during interlinking, we merge all the multiplier columns together using a '*'
+        df_data[self.key_name_multiplier_uppered_plural]: pd.Series = df_data.copy().filter(regex = self.key_name_multiplier).astype(str).agg(" * ".join, axis = 1)
+        
+        # Similarly as for the multiplier, we'd like to understand what happened in between with all the other fields when interlinking
+        # We loop through all the identifier columns and merge the together
+        for i in (self.key_name_version,) + self.identifier_2 + self.identifier_1:
+            df_data[i[0].upper() + i[1:].lower()]: pd.Series = df_data.copy().filter(regex = "{}{}{}{}$|{}{}{}".format(self.FROM_definer, self.whitespace_replacer, i, self.whitespace_replacer, min(counters), self.TO_definer, self.whitespace_replacer, i)).astype(str).agg(" -> ".join, axis = 1)
+        
+        # Now we only keep the columns with the minimum and maximum counter at the end of the column name,
+        # ... plus the ones that we introduced beforehand
+        # We use regex to do that...
+        # !!! df_data: pd.DataFrame = df_data.copy().filter(regex = "(^FROM_(.*)_{}$)|(^TO_(.*)_{}$)|^Multiplier|{}".format(min(counters), max(counters), "|".join(["(^" + m[0].upper() + m[1:].lower() + "$)" for m in cols_1 + cols_2_without_version])))        
+        df_data: pd.DataFrame = df_data.copy().filter(regex = "(^{}{}(.*){}{}$)|(^{}{}(.*){}{}$)|^{}|{}".format(self.FROM_definer, self.whitespace_replacer, self.whitespace_replacer, min(counters), self.TO_definer, self.whitespace_replacer, self.whitespace_replacer, max(counters), self.key_name_multiplier_uppered, "|".join(["(^" + m + "$)" for m in (self.key_name_version_uppered,) + self.identifier_2_uppered + self.identifier_1_uppered])))        
+        
+        # We remove the numbers at the end of the column names again, since we do not need them anymore
+        df_data.columns = df_data.copy().columns.str.replace(self.whitespace_replacer + "[0-9]+$", "", regex = True)
+        
+        # Write the data where interlinktion failed to separate dataframe/dictionary
+        # First we extract the data where interlinktion failed
+        # This is by default the ones where either multiplier is 0, or the TO version is empty or not at the level where we want it to be
+        interlinktion_failed: pd.Series = (df_data[self.key_name_TO_version].isna()) | (df_data[self.key_name_TO_version] != TO_version) | (df_data[self.key_name_multiplier_uppered] == 0)
+        df_where_interlinktion_failed: pd.DataFrame = df_data.copy()[interlinktion_failed]
+        df_data: pd.DataFrame = df_data.copy()[~interlinktion_failed]
+            
+        deleted = curr_df.copy().filter(regex = "|".join(["TO_" + m for m in cols_1_without_version + cols_2_without_version])).isna().all(axis = 1)
+        deleted_df = curr_df.copy()[deleted]
+        curr_df = curr_df.copy()[~deleted]
+        
+        newly_introduced = curr_df.copy().filter(regex = "|".join(["FROM_" + m for m in cols_1_without_version + cols_2_without_version])).isna().all(axis = 1)
+        newly_introduced_df = curr_df.copy()[newly_introduced]
+        curr_df = curr_df.copy()[~newly_introduced]
+        
+        final[(FROM_version, TO_version)] = curr_df.copy()
+        final_failed[(FROM_version, TO_version)] = failed_df.copy()
+        final_deleted[(FROM_version, TO_version)] = deleted_df.copy()
+        final_newly_introduced[(FROM_version, TO_version)] = newly_introduced_df.copy()
+        
+        return df_data
+    
+self.df_interlinktion_raw: dict = {}
 
         
-        
-        
-        
-        
+correspondence: Correspondence = Correspondence(ecoinvent_model_type = "cutoff")
+correspondence.read_correspondence_dataframe(filepath_correspondence_excel = here / "data" / "Correspondence-File-v3.1-v3.2.xlsx",
+                                             FROM_version = (3, 1),
+                                             TO_version = (3, 2)
+                                             )
+correspondence.read_correspondence_dataframe(filepath_correspondence_excel = here / "data" / "Correspondence-File-v3.2-v3.3.xlsx",
+                                             FROM_version = (3, 2),
+                                             TO_version = (3, 3)
+                                             )
+
+df_multipliers_not_summing_to_1: pd.DataFrame = pd.DataFrame(correspondence.check_if_multipliers_sum_to_1())
+df_multipliers_not_summing_to_1.to_excel(here / "multipliers_not_summing_to_1_new.xlsx", index = False)
+    
+
+see = correspondence.interlink_correspondence_files(FROM_version = (3, 1),
+                                                    TO_version = (3, 3))
 
 #%% Create correspondence mapping from ecoinvent files
  
