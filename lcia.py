@@ -897,6 +897,9 @@ def register_biosphere(Brightway_project_name: str,
     
     # ... and write biosphere flows to a new biosphere database
     bw2data.Database(biosphere_db_name).write(deepcopied_biosphere_dict)
+    
+    # Configurate biosphere_db_name as the biosphere database
+    bw2data.config.p["biosphere_database"] = biosphere_db_name
 
 
 def import_SimaPro_LCIA_methods(path_to_SimaPro_CSV_LCIA_files: pathlib.Path,
