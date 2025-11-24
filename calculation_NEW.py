@@ -12,6 +12,7 @@ import pathlib
 import datetime
 import bw2calc
 import bw2data
+import numpy as np
 import pandas as pd
 from bw2calc.errors import NonsquareTechnosphere, EmptyBiosphere, AllArraysEmpty
 import helper as hp
@@ -99,6 +100,11 @@ class LCA_Calculation():
         
         # Definition of names to be used for the different results
         self.name_LCIA_scores: str = "LCIA_scores"
+        self.name_LCI_emission_contributions: str = "LCI_emission_contribution"
+        self.name_LCI_process_contributions: str = "LCI_process_contribution"
+        self.name_LCIA_emission_contributions: str = "LCIA_emission_contribution"
+        self.name_LCIA_process_contributions: str = "LCIA_process_contribution"
+        self.name_characterization_factors: str = "Characterization_factors"
         
         self.characterization_matrices: dict = {}
         self.lca_objects: dict = {}
@@ -124,29 +130,36 @@ class LCA_Calculation():
         # Calculate inventory once to load all database data
         lca_object.lci()
         
-        # # Keep the LU factorized matrices for faster calculations
-        # lca_object.decompose_technosphere()
-        
         # Load method data 
         lca_object.lcia()
         
-        # Append to dictionary
+        # Append to dictionary and initialize a dictionary to store the characterized matrices to
         self.lca_objects[database]: bw2calc.lca.LCA = lca_object
         self.characterization_matrices[database]: dict = {}
         
+        # Loop through each method to build the characterization matrices
         for met in self.methods:
+            
+            # Switch to new method
             lca_object.switch_method(met)
+            
+            # Extract the characterization matrix and write to dictionary
             self.characterization_matrices[database][met] = lca_object.characterization_matrix.copy()
         
+        # Return the lca object
         return self.lca_objects[database]
     
     
     def _get_characterization_matrix(self, database: str, method: str):
         
+        # Simply return if already existing
         if database in self.characterization_matrices:
             return self.characterization_matrices[database][method]
 
+        # Otherwise, create BW object and matrices
         self._get_LCA_object(database = database)
+        
+        # Return the matrix
         return self.characterization_matrices[database][method]
     
     
@@ -161,7 +174,10 @@ class LCA_Calculation():
                   calculate_LCIA_process_contribution: bool = False):
         
         # Add an instance where results will be saved to
-        self.results: dict = {self.name_LCIA_scores: []}
+        self.results: dict = {self.name_LCIA_scores: [],
+                              self.name_LCIA_emission_contributions: [],
+                              self.name_LCIA_process_contributions: []
+                              }
         
         # Save time when calculation starts
         if self.progress_bar:
@@ -176,44 +192,228 @@ class LCA_Calculation():
             # Wrap progress bar around iterator
             activities: list = hp.progressbar(activities, prefix = "\nCalculate ...")
         
+        # Loop through all activities
         for act in activities:
             
-            # This block is needed for any calculation
-            # We at least need to get 1) the BW object, 2) create the inventory (which takes quite some time)
+            # First get the database the activity belongs to
             database: str = act.get("database")
+
+            # This block is needed for any calculation
+            # We at least need
+            # ... to get 1) the BW object,
             lca_object: bw2calc.lca.LCA = self._get_LCA_object(database = database)
+
+            # ... to redo 2) the inventory matrix (which takes quite some time)
             lca_object.redo_lci({act: self.functional_amount})
+            
+            # We then extract the inventory matrix
             inventory = lca_object.inventory
             
+            # Extract the biosphere dictionary that is required to get proper emission contribution
+            if any((extract_LCI_emission_contribution, calculate_LCIA_emission_contribution)):
+                biosphere_series: pd.Series = pd.Series(list(lca_object.biosphere_dict.keys()), name = "key")
+
             # If we need to do any LCIA calculation, we need to do the following block
-            # 
+            # This however will only be done for LCIA score calculation, LCIA emission contribution and LCIA process contribution
             if any([calculate_LCIA_scores, calculate_LCIA_emission_contribution, calculate_LCIA_process_contribution]):
+                
+                # Initialize a temporary dictionary to store the characterized matrices to
                 characterized_matrices: dict = {}
+                
+                # Loop through each method and create the characterized matrices by multiplying the inventory matrix with the 
                 for met in self.methods:
+                    
+                    # Build or simply get the matrix
                     matrix = self._get_characterization_matrix(database = database, method = met)
+                    
+                    # Multiply the matrices
                     characterized_matrices[met] = (matrix * inventory)
             
+            # If LCIA scores are calculated, go on
             if calculate_LCIA_scores:
-                # self.results[self.name_LCIA_scores] += [m for _, m in characterized_matrices.items()]
-
+                
+                # Loop through each characterized matrix and method to get the sum/LCIA score
                 for met, characterized_matrix in characterized_matrices.items():
                     
-                    # The ID tuple is always of length 5
-                    ID: tuple = (act.key, # Key of the current activity
-                                  self.functional_amount, # The amount that was calculated
-                                  None, # Flow key, not used here
-                                  None, # Flow amount, not used here
-                                  characterized_matrix.sum(), # The calculated impact assessment result
-                                  met # The method we calculated the result for
-                                  ) 
-                
-                    self.results[self.name_LCIA_scores] += [ID]
+                    # The ID tuple is always of length 5!
+                    ID: tuple = (
+                        act.key, # Key of the current activity
+                        self.functional_amount, # The amount that was calculated
+                        None, # Flow key, not used here
+                        None, # Flow amount, not used here
+                        characterized_matrix.sum(), # The calculated impact assessment result
+                        met # The method we calculated the result for
+                    ) 
                     
-        
-        # Print summary statement
+                    # Add to list in the result dictionary
+                    self.results[self.name_LCIA_scores] += [ID]
+            
+            if any((calculate_LCIA_emission_contribution, calculate_LCIA_process_contribution)):
+                
+                # Loop through each characterized matrix and method to get the sum/LCIA score
+                for met, characterized_matrix in characterized_matrices.items():
+                    
+                    if calculate_LCIA_emission_contribution:
+                        
+                        time_1 = datetime.datetime.now() # !!!
+                        
+                        # Extract the emission contribution as the sum of the characterized matrix
+                        LCIA_emission_contribution_matrix: np.matrix = characterized_matrix.sum(axis = 1)
+                        
+                        time_2 = datetime.datetime.now() # !!!
+                        
+                        # Apply default function to merge matrices, apply potential cutoff and write as list of dictionaries
+                        LCIA_emission_contribution: list[dict] = self._default_calculate_contribution_function(contribution_matrix = LCIA_emission_contribution_matrix,
+                                                                                                               biosphere_or_activity_series = biosphere_series,
+                                                                                                               cut_off_percentage = self.cut_off_percentage)
+                        
+                        time_3 = datetime.datetime.now() # !!!
+
+                        # Loop through each contribution element
+                        for i in LCIA_emission_contribution:
+                            
+                            # The ID tuple is always of length 5!
+                            ID: tuple = (
+                                act.key, # Key of the current activity
+                                self.functional_amount, # The amount that was calculated
+                                i["key"], # Flow key, not used here
+                                None, # Flow amount, not used here
+                                i["numbers"], # The calculated impact assessment result
+                                met # The method we calculated the result for
+                            ) 
+                        
+                            # Add list of dictionaries to results
+                            self.results[self.name_LCIA_emission_contributions] += [ID]
+                    
+                        time_4 = datetime.datetime.now() # !!!
+                        print("calculate 1", time_2 - time_1)
+                        print("calculate 2", time_3 - time_2)
+                        print("calculate 3", time_4 - time_3)
+                        raise ValueError()
+                        
+        # Print summary statement(s)
         if self.progress_bar:
-            print("  - Calculation of " + str(len(self.activity_method_combinations)) + " LCIA score(s) (from " + str(len(self.activities)) + " activity/ies & " + str(len(self.methods)) + " method(s)) took " + self.convert_timedelta(datetime.datetime.now() - start))
+            print("  - Calculation /extraction time: {}".format(self.convert_timedelta(datetime.datetime.now() - start)))
+            
+            if calculate_LCIA_scores:
+                print("      - {} LCIA score(s) from {} activity/ies & {} methods were calculated".format(len(self.activities)*len(self.methods), len(self.activities), len(self.methods)))
     
+    
+    
+    # A default function acting as supporter for the contribution functions
+    def _default_calculate_contribution_function(self,
+                                                 contribution_matrix: np.matrix,
+                                                 biosphere_or_activity_series: pd.Series,
+                                                 cut_off_percentage: (float | None)) -> list[dict]:
+        
+        # Check function input type
+        hp.check_function_input_type(self._default_calculate_contribution_function, locals())
+        
+        time_1 = datetime.datetime.now() # !!!
+        
+        # Convert matrix into a series
+        contribution_series: pd.Series = pd.Series(pd.DataFrame(contribution_matrix)[0], name = "numbers")
+        
+        time_2 = datetime.datetime.now() # !!!
+        
+        # Merge the two series together
+        contribution_df: pd.DataFrame = pd.concat((biosphere_or_activity_series, contribution_series), axis = 1)
+        
+        time_3 = datetime.datetime.now() # !!!
+        
+        # Remove the entries which have a 0 as an amount
+        contribution_df_0_removed: pd.DataFrame = contribution_df[(contribution_df["numbers"] > 0) | (contribution_df["numbers"] < 0)]
+        
+        time_4 = datetime.datetime.now() # !!!
+
+        # Check if a cut off should be applied
+        if cut_off_percentage is None:
+            
+            # If no cut-off should be applied, simply use the orig dataframe and convert to list of dictionaries
+            contribution: list[dict] = contribution_df_0_removed.to_dict("records")
+            
+        else:            
+            # Apply the cut off function to remove lines that exceed the cut off
+            contribution_cut_off_applied: pd.DataFrame = self.apply_cut_off(df = contribution_df_0_removed,
+                                                                            column_name_for_filtering = "numbers",
+                                                                            cut_off_percentage = cut_off_percentage)
+            
+            time_5 = datetime.datetime.now() # !!!
+            
+            # Convert the dataframe to a list of dictionaries
+            contribution: list[dict] = contribution_cut_off_applied.to_dict("records")
+            
+            time_6 = datetime.datetime.now() # !!!
+            
+            # ChatGPT said this would be faster to convert to records, however does not seem to be true
+            # cols = contribution_cut_off_applied.columns.tolist()
+            # arr = contribution_cut_off_applied.to_numpy()
+            # contribution = [dict(zip(cols, row)) for row in arr]
+        
+        print("default 1", time_2 - time_1)
+        print("default 2", time_3 - time_2)
+        print("default 3", time_4 - time_3)
+        print("default 4", time_5 - time_4)
+        print("default 5", time_6 - time_5)
+        print("")
+        
+        # Return the list of dictionaries
+        return contribution
+    
+    
+    # A function that removes rows from a dataframe and summarizes them into a "rest" row
+    def apply_cut_off(self,
+                      df: pd.DataFrame,
+                      column_name_for_filtering: str,
+                      cut_off_percentage: (float | None) = None) -> pd.DataFrame:
+        
+        # Check if cut off is provided
+        if cut_off_percentage is not None:
+            
+            time_1 = datetime.datetime.now() # !!!
+            
+            # Cut off percentage needs to be between 0 and 1. If this is not the case, raise error
+            if cut_off_percentage > 1 or cut_off_percentage < 0:
+                raise ValueError("Cut-off percentage provided '" + str(cut_off_percentage) + "' is invalid. It needs to be between 0 and 1.")
+            
+            time_2 = datetime.datetime.now() # !!!
+
+            # First identify the value, which defines whether data should be cut off or not. We do this individually for negative and positive values
+            min_cut_off_value: float = float(sum(df[df[column_name_for_filtering] < 0][column_name_for_filtering])) * cut_off_percentage
+            max_cut_off_value: float = float(sum(df[df[column_name_for_filtering] > 0][column_name_for_filtering])) * cut_off_percentage
+            
+            time_3 = datetime.datetime.now() # !!!
+
+            # Filter and sort the emissions -> everything exceeding the cut off will be removed
+            df_contributions_min: pd.DataFrame = df[df[column_name_for_filtering] < min_cut_off_value]# .sort_values([column_name_for_filtering]) # !!!
+            df_contributions_max: pd.DataFrame = df[df[column_name_for_filtering] > max_cut_off_value]# .sort_values([column_name_for_filtering]) # !!!
+            
+            time_4 = datetime.datetime.now() # !!!
+
+            # Compile the rest quantity that was excluded -> sum all the amounts that were filtered out before and combine to one entry
+            rest_quantity: float = float(sum(df[(df[column_name_for_filtering] >= min_cut_off_value) & (df[column_name_for_filtering] <= max_cut_off_value)][column_name_for_filtering]))
+            rest: pd.DataFrame = pd.DataFrame({"key": [(None, None)], column_name_for_filtering: [rest_quantity]}) # if cut_off_percentage < 1 and cut_off_percentage > 0 else pd.DataFrame({})
+            
+            time_5 = datetime.datetime.now() # !!!
+
+            # Merge the three dataframes together
+            df_contributions_merged: pd.DataFrame = pd.concat([df_contributions_max, df_contributions_min, rest], axis = 0)
+            
+            time_6 = datetime.datetime.now() # !!!
+            
+            print("cutoff 1", time_2 - time_1)
+            print("cutoff 2", time_3 - time_2)
+            print("cutoff 3", time_4 - time_3)
+            print("cutoff 4", time_5 - time_4)
+            print("cutoff 5", time_6 - time_5)
+            print("")
+            
+            # Return dataframe with applied cut off
+            return df_contributions_merged
+        
+        else:
+            # Return initial dataframe without any changes
+            return df
     
     
     
@@ -248,12 +448,19 @@ class LCA_Calculation():
         return string
 
         
-acts: list = [m for m in bw2data.Database("AgriFootprint v6.3 - SimaPro")]
+acts: list = [m for m in bw2data.Database("AgriFootprint v6.3 - SimaPro")][1:100]
 mets: list[tuple] = [m for m in bw2data.methods if "SALCA" in m[0]]
 
 lca_calculation: LCA_Calculation = LCA_Calculation(activities = acts,
-                                                   methods = mets)
-lca_calculation.calculate()
+                                                   methods = mets,
+                                                   cut_off_percentage = 0.001)
+lca_calculation.calculate(calculate_LCIA_scores = True,
+                          extract_LCI_exchanges = False,
+                          extract_LCI_emission_contribution = False,
+                          extract_LCI_process_contribution = False,
+                          calculate_LCIA_scores_of_exchanges = False,
+                          calculate_LCIA_emission_contribution = True,
+                          calculate_LCIA_process_contribution = False)
 results: list[tuple] = lca_calculation.results
 
 #%%
