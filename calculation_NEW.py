@@ -26,7 +26,7 @@ change_brightway_project_directory(str(here / "notebook" / "Brightway2_projects"
 project_name: str = "Food databases"
 bw2data.projects.set_current(project_name)
 
-acts: list = [m for m in bw2data.Database("AgriFootprint v6.3 - SimaPro")][0:1000]
+acts: list = [m for m in bw2data.Database("AgriFootprint v6.3 - SimaPro")][0:2000]
 mets: list[tuple] = [m for m in bw2data.methods if "SALCA" in m[0]]
 
 #%%
@@ -179,7 +179,7 @@ class LCA_Calculation():
         lca_object: bw2calc.lca.LCA = self._get_LCA_object(database = database)
         
         # Write the biosphere dict as array
-        biosphere_array: np.array = np.array(list(lca_object.biosphere_dict.keys()))
+        biosphere_array: np.array = np.array([str(m) for m in lca_object.biosphere_dict.keys()], dtype = "U")
         
         # Temporarily store
         self.biosphere_dicts_as_arrays[database]: np.array = biosphere_array
@@ -189,17 +189,17 @@ class LCA_Calculation():
     
     
     
-    def _get_element_array(self, element: (str | None | tuple), length: int) -> np.array:
+    def _get_element_array(self, element: (str | None | tuple), length: int, dtype: (str | None)) -> np.array:
         
         # Simply return if already existing
-        if self.element_arrays.get((element, length)) is not None:
-            return self.element_arrays[(element, length)]
+        if self.element_arrays.get((element, length, dtype)) is not None:
+            return self.element_arrays[(element, length, dtype)]
         
         # Construct an array with only elements and length indicated
-        element_array: np.array = np.array([element] * length)
+        element_array: np.array = np.array([element] * length, dtype = dtype)
         
         # Add the matrix to the temporary dict
-        self.element_arrays[(element, length)]: np.array = element_array
+        self.element_arrays[(element, length, dtype)]: np.array = element_array
         
         # Return the matrix
         return element_array
@@ -235,47 +235,60 @@ class LCA_Calculation():
     
     def _get_structured_arrays_for_LCIA_emission_contribution(self, database: str) -> None:
         
+        # If already existing, simply return
         if database in self.structured_arrays_for_LCIA_emission_contribution:
             return
         
+        # Get the biosphere activity dictionary as an array
         biosphere_array: np.array = self._get_biosphere_dict_as_array(database = database)
-        biosphere_array_dtype = biosphere_array.dtype
-        length_biosphere_array: int = biosphere_array.shape[0]
-        width_biosphere_array: int = biosphere_array.shape[1]
         
-        none_array: np.array = self._get_element_array(element = None, length = length_biosphere_array)
-        none_array_dtype = none_array.dtype
-
-        functional_amount_array: np.array = self._get_element_array(element = self.functional_amount, length = length_biosphere_array)
+        # Extract the lenght of the array, since everything needs to be at this length
+        length_biosphere_array: int = biosphere_array.shape[0]
+        
+        # Construct an array with only the None's and the length of the biosphere array
+        none_array: np.array = self._get_element_array(element = None, length = length_biosphere_array, dtype = object)
+        
+        # Construct an array with the functional amount and the length of the biosphere array
+        functional_amount_array: np.array = self._get_element_array(element = self.functional_amount, length = length_biosphere_array, dtype = "float64")
         functional_amount_array_dtype = functional_amount_array.dtype
         
-        activity_key_array: np.array = self._get_element_array(element = self.activities[0].key, length = length_biosphere_array)
-        activity_key_array_dtype = activity_key_array.dtype
-        width_activity_key_array = activity_key_array.shape[1]
+        # Construct a placeholder array with a random activity key and the length of the biosphere array
+        # Note that storing a tuple in an array would be doable, but we then run into issues converting it back
+        # That's why we cast the tuple to a string first
+        activity_key_array: np.array = self._get_element_array(element = str(self.activities[0].key), length = length_biosphere_array, dtype = "U")
         
+        # Initialize a new dictionary instance to save the structured arrays to
         self.structured_arrays_for_LCIA_emission_contribution[database]: dict = {}
         
+        # Loop through each method
         for met in self.methods:
             
-            method_array: np.array = self._get_element_array(element = met, length = length_biosphere_array)
-            method_array_dtype = method_array.dtype
-            width_method_array = method_array.shape[1]
+            # Build an array with the length of the biosphere array and the method tuple as string
+            # Note that storing a tuple in an array would be doable, but we then run into issues converting it back
+            # That's why we cast the tuple to a string first
+            method_array: np.array = self._get_element_array(element = str(met), length = length_biosphere_array, dtype = "U")
             
+            # Extract the array type from the inventory
             inventory_dtype = self._get_LCA_object(database = database).inventory.dtype
             
-            dtype: list[tuple] = [("activity_key", activity_key_array_dtype, (width_activity_key_array,)),
+            # Construct a 0 array for the values (this one will be overwritten later)
+            value_array: np.array = np.zeros(length_biosphere_array, dtype = inventory_dtype)
+
+            # Construct dtypes for the structured array
+            dtype: list[tuple] = [("activity_key", activity_key_array.dtype),
                                   ("functional_amount", functional_amount_array_dtype),
-                                  ("flow_key", biosphere_array_dtype, (width_biosphere_array,)),
-                                  ("flow_amount", none_array_dtype),
+                                  ("flow_key", biosphere_array.dtype),
+                                  ("flow_amount", none_array.dtype),
                                   ("value", inventory_dtype),
-                                  ("method", method_array_dtype, (width_method_array,))
+                                  ("method", method_array.dtype)
                                   ]
             
+            # Build structured array and add to dictionary
             self.structured_arrays_for_LCIA_emission_contribution[database][met]: np.array = np.core.records.fromarrays([activity_key_array,
                                                                                                                          functional_amount_array,
                                                                                                                          biosphere_array,
                                                                                                                          none_array,
-                                                                                                                         np.zeros(length_biosphere_array, dtype = inventory_dtype),
+                                                                                                                         value_array,
                                                                                                                          method_array
                                                                                                                          ], dtype = dtype)
     
@@ -377,7 +390,7 @@ class LCA_Calculation():
                         # time: tuple = ()
                         # time += (datetime.datetime.now(),) # !!!
                         # print([(time[m] - time[m-1]).total_seconds() for m in list(range(len(time)))[1:]])
-
+                        
                         # Extract the emission contribution as the sum of the characterized matrix
                         LCIA_emission_contribution_array: np.array = np.array(characterized_matrix.sum(axis = 1))[:, 0]
                         
@@ -385,8 +398,9 @@ class LCA_Calculation():
                         structured_array["value"] = LCIA_emission_contribution_array
                         
                         structured_array_cutoff: np.array = self._apply_cut_off_to_structured_array(structured_array = structured_array)
-                        structued_array_cutoff_as_list: list[tuple] = structured_array_cutoff.tolist()
-                        self.results[self.name_LCIA_emission_contributions] += [structued_array_cutoff_as_list]
+                        structured_array_cutoff_as_list: list[tuple] = structured_array_cutoff.tolist()                       
+                        
+                        self.results[self.name_LCIA_emission_contributions] += [structured_array_cutoff_as_list]
 
                         
                         
@@ -441,7 +455,25 @@ lca_calculation.calculate(calculate_LCIA_scores = True,
                           calculate_LCIA_emission_contribution = True,
                           calculate_LCIA_process_contribution = False)
 results: list[tuple] = lca_calculation.results
-print(tuple(results["LCIA_emission_contribution"][0][0][2]))
+# print(tuple(results["LCIA_emission_contribution"][0][0][2]))
+
+
+#%%
+# arr = np.array([(("A", "AA"), "B"), (("C", "CC"), "D")], dtype=object)
+# print(arr.tolist())
+
+# arr2 = np.empty(2, dtype = [("col", object, (2,))])
+# arr2["col"] = arr
+# print(arr2.tolist())
+
+
+# import ast
+# A_tuple = ("Aalksfdjlksdajflasflökdsaflökjja", "Bdfbgkljsdflkdsajflköadsjaflködjasflökjdaslkfjadsldslkaf")
+# A_as_string = str(A_tuple)
+
+# time = datetime.datetime.now()
+# print(ast.literal_eval(A_as_string))
+# print(datetime.datetime.now()- time)
 
 #%%
 
