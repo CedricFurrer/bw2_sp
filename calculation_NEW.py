@@ -5,6 +5,7 @@ if __name__ == "__main__":
     os.chdir(pathlib.Path(__file__).parent)
 
 import re
+import ast
 import copy
 import scipy
 import numpy
@@ -26,7 +27,7 @@ change_brightway_project_directory(str(here / "notebook" / "Brightway2_projects"
 project_name: str = "Food databases"
 bw2data.projects.set_current(project_name)
 
-acts: list = [m for m in bw2data.Database("AgriFootprint v6.3 - SimaPro")][0:2000]
+acts: list = [m for m in bw2data.Database("AgriFootprint v6.3 - SimaPro")][0:3]
 mets: list[tuple] = [m for m in bw2data.methods if "SALCA" in m[0]]
 
 #%%
@@ -109,6 +110,11 @@ class LCA_Calculation():
         self.name_LCIA_process_contributions: str = "LCIA_process_contribution"
         self.name_characterization_factors: str = "Characterization_factors"
         
+        self.activities_as_dict: dict = {}
+        self.database_objects: dict = {}
+        self.method_objects: dict = {}
+        self.method_units: dict = {}
+        self.characterization_factors: dict = {}
         self.lca_objects: dict = {} # LCIA score
         self.characterization_matrices: dict = {} # LCIA score, LCIA emission contr.
         self.biosphere_dicts_as_arrays: dict = {} # LCIA emission contr.
@@ -116,13 +122,82 @@ class LCA_Calculation():
         self.structured_arrays_for_LCIA_emission_contribution: dict = {} # LCIA emission contr.
     
     
+    def _get_database_object(self, database: str) -> bw2data.Database:
+        
+        # Simply return, if already existing
+        if database in self.database_objects:
+            return self.database_objects[database]
+        
+        # Initialize the object
+        obj: bw2data.Database = bw2data.Database(database)
+        
+        # Add to dictionary, temporarily
+        self.database_objects[database] = obj
+        
+        # Return the object
+        return obj
+    
+    
+    def _get_method_object(self, method: tuple[str]) -> bw2data.Method:
+        
+        # Simply return, if already existing
+        if method in self.method_objects:
+            return self.method_objects[method]
+        
+        # Initialize the object
+        obj: bw2data.Method = bw2data.Method(method)
+        
+        # Add to dictionary, temporarily
+        self.method_objects[method] = obj
+        
+        # Return the object
+        return obj
+    
+    
+    def _get_method_unit(self, method: tuple[str]) -> str:
+        
+        # Simply return, if already existing
+        if method in self.method_units:
+            return self.method_units[method]
+        
+        # Get or initialize the method object
+        method_obj: bw2data.Method = self._get_method_object(method = method)
+        method_unit: str = method_obj.metadata["unit"]
+
+        # Add to dictionary, temporarily
+        self.method_units[method] = method_unit
+        
+        # Return the method unit as string
+        return method_unit
+    
+    
+    def _get_act_as_dict(self, act_key: tuple[str, str], keys_to_extract: (tuple[str] | None) = None) -> dict:
+        
+        # Simply return, if already existing
+        if act_key in self.activities_as_dict:
+            return self.activities_as_dict[act_key]
+        
+        # Retrieve the activity object
+        act = self._get_database_object(database = act_key[0]).get(act_key[1])
+        
+        # Extract the relevant keys, or if None is specified, the whole dictionary
+        act_as_dict: dict = {i: act.get(i) for i in keys_to_extract} if keys_to_extract is not None else act.as_dict()
+        
+        # Save the dict temporarily
+        self.activities_as_dict[act_key]: dict = act_as_dict
+        
+        # Return the dictionary
+        return act_as_dict
+    
+    
     def _get_LCA_object(self, database: str) -> bw2calc.lca.LCA:
         
+        # Simply return, if already existing
         if database in self.lca_objects:
             return self.lca_objects[database]
         
         # Extract first inventory and method to then initialise lca object
-        _act: bw2data.backends.peewee.proxies.Activity = bw2data.Database(database).random()
+        _act: bw2data.backends.peewee.proxies.Activity = self._get_database_object(database = database).random()
         _met: tuple = self.methods[0]
         
         # LCA object generation will fail for biosphere databases
@@ -208,6 +283,10 @@ class LCA_Calculation():
     def _apply_cut_off_to_structured_array(self, structured_array: np.array) -> np.array:
         
         array: np.array = structured_array[structured_array["value"] != 0]
+        
+        if self.cut_off_percentage is None:
+            return array
+        
         last: tuple = tuple(array[-1:])
         
         mask_under_0 = array["value"] < 0
@@ -219,16 +298,16 @@ class LCA_Calculation():
         min_treshold = sum(under_0["value"]) * self.cut_off_percentage
         max_treshold = sum(over_0["value"]) * self.cut_off_percentage
         
-        mask_min_treshold = array["value"] < min_treshold
-        mask_max_treshold = array["value"] > max_treshold
+        mask_min_treshold = under_0["value"] < min_treshold
+        mask_max_treshold = over_0["value"] > max_treshold
 
-        mask_rest = (~mask_min_treshold) & (~mask_max_treshold)
-        rest_amount = sum(array["value"][mask_rest])
+        # mask_rest = (~mask_min_treshold) & (~mask_max_treshold)
+        rest_amount = sum(under_0["value"][~mask_min_treshold]) + sum(over_0["value"][~mask_max_treshold])
         
-        updated_last: tuple = last[:2] + (rest_amount,) + last[3:]
+        updated_last: tuple = last[:2] + ("Rest", rest_amount,) + last[3:] # !!!
         rest: np.array = np.array([updated_last[0]], dtype = structured_array.dtype)
         
-        constructed = np.concatenate((over_0, under_0, rest), axis = 0)
+        constructed = np.concatenate((over_0[mask_max_treshold], under_0[mask_min_treshold], rest), axis = 0)
         
         return constructed
     
@@ -303,10 +382,10 @@ class LCA_Calculation():
                   calculate_LCIA_process_contribution: bool = False):
         
         # Add an instance where results will be saved to
-        self.results: dict = {self.name_LCIA_scores: [],
-                              self.name_LCIA_emission_contributions: [],
-                              self.name_LCIA_process_contributions: []
-                              }
+        self.results_raw: dict = {self.name_LCIA_scores: [],
+                                  self.name_LCIA_emission_contributions: [],
+                                  self.name_LCIA_process_contributions: []
+                                  }
         
         # Save time when calculation starts
         if self.progress_bar:
@@ -374,11 +453,15 @@ class LCA_Calculation():
                     ) 
                     
                     # Add to list in the result dictionary
-                    self.results[self.name_LCIA_scores] += [ID]
+                    self.results_raw[self.name_LCIA_scores] += [ID]
             
             # Prepare or retrieve structured arrays for LCIA emission contribution
             if calculate_LCIA_emission_contribution:
                 self._get_structured_arrays_for_LCIA_emission_contribution(database = database)
+                
+                _dummy_LCIA_emission_structured_array: np.array = self.structured_arrays_for_LCIA_emission_contribution[database][self.methods[0]]
+                LCIA_emission_contribution_activity_key_array: np.array = self._get_element_array(str(activity_key), len(_dummy_LCIA_emission_structured_array["activity_key"]), dtype = "U")
+                
             
             if any((calculate_LCIA_emission_contribution, calculate_LCIA_process_contribution)):
                 
@@ -394,13 +477,23 @@ class LCA_Calculation():
                         # Extract the emission contribution as the sum of the characterized matrix
                         LCIA_emission_contribution_array: np.array = np.array(characterized_matrix.sum(axis = 1))[:, 0]
                         
+                        # Retrieved the already built structured array
                         structured_array: np.array = self.structured_arrays_for_LCIA_emission_contribution[database][met]
+                        
+                        # Overwrite the activity key with the current activity key
+                        structured_array["activity_key"]: np.array = LCIA_emission_contribution_activity_key_array
+                        
+                        # Overwrite the dummy values with the contribution values
                         structured_array["value"] = LCIA_emission_contribution_array
                         
+                        # Apply a cutoff
                         structured_array_cutoff: np.array = self._apply_cut_off_to_structured_array(structured_array = structured_array)
+                        
+                        # Convert structured array back to list of tuples
                         structured_array_cutoff_as_list: list[tuple] = structured_array_cutoff.tolist()                       
                         
-                        self.results[self.name_LCIA_emission_contributions] += [structured_array_cutoff_as_list]
+                        # Add to the result dictionary
+                        self.results_raw[self.name_LCIA_emission_contributions] += structured_array_cutoff_as_list
 
                         
                         
@@ -411,8 +504,96 @@ class LCA_Calculation():
             if calculate_LCIA_scores:
                 print("      - {} LCIA score(s) from {} activity/ies & {} methods were calculated".format(len(self.activities)*len(self.methods), len(self.activities), len(self.methods)))
     
-
     
+    
+    def get_characterization_factors(self, methods: list[tuple], extended: bool) -> list[dict]:
+        
+        ...
+    
+    
+    def get_results(self, extended: bool) -> list[dict]:
+        
+        # Check if results dictionary is available        
+        if not hasattr(self, "results_raw"):
+            raise ValueError("Nothing has been calculated yet. Use .calculate() to run calculation first.")
+        
+        keys_to_extract_from_BW_acts: tuple[str] = ("name",
+                                                    "SimaPro_name",
+                                                    "location",
+                                                    "unit")
+
+        self._act_k_name: str = "Activity"
+        self._flow_k_name: str = "Flow"
+        self._score_k_name: str = "Score"
+        self._method_k_name: str = "Method"
+        self._name_sep: str = "_"
+
+        k_act_database: str = self._name_sep.join((self._act_k_name, "database"))
+        k_act_code: str = self._name_sep.join((self._act_k_name, "code"))
+        k_act_amount: str = self._name_sep.join((self._act_k_name, "amount"))
+        k_flow_database: str = self._name_sep.join((self._flow_k_name, "database"))
+        k_flow_code: str = self._name_sep.join((self._flow_k_name, "code"))
+        k_flow_amount: str = self._name_sep.join((self._flow_k_name, "amount"))
+        
+        self.results: dict = {k: [] for k, _ in self.results_raw.items()}
+        
+        for result_type, results in self.results_raw.items():
+            # print(set([len(m)for m in results]))
+            
+            for (act_key, act_amount, flow_key, flow_amount, score, method) in results:  
+                
+                # If everything is 0, we can go to the next one and do not need to add it to the results
+                if act_amount == 0 and flow_amount == 0 and score == 0:
+                    continue
+                
+                if isinstance(act_key, str):
+                    act_key: tuple[str, str] = ast.literal_eval(act_key)
+                
+                if isinstance(flow_key, str):
+                    flow_key: tuple[str, str] = ast.literal_eval(flow_key)
+                
+                if isinstance(method, str):
+                    method: tuple[str, str] = ast.literal_eval(method)
+                
+                v_act_database: (str | None) = act_key[0] if act_key is not None else None
+                v_act_code: (str | None) = act_key[1] if act_key is not None else None
+                v_flow_database: (str | None) = flow_key[0] if flow_key is not None else None
+                v_flow_code: (str | None) = flow_key[1] if flow_key is not None else None
+                
+                if not extended:
+                    result_as_dict: dict = {k_act_database: v_act_database,
+                                            k_act_code: v_act_code,
+                                            k_act_amount: act_amount,
+                                            k_flow_database: v_flow_database,
+                                            k_flow_code: v_flow_code,
+                                            k_flow_amount: flow_amount,
+                                            self._score_k_name: score,
+                                            self._method_k_name: method}
+                    
+                else:
+                    # Retrieve the specified dictionary values from the Brightway background activities
+                    act_as_dict: dict = self._get_act_as_dict(act_key, keys_to_extract_from_BW_acts) if act_key is not None else {}
+                    flow_as_dict: dict = self._get_act_as_dict(flow_key, keys_to_extract_from_BW_acts) if flow_key is not None else {}
+                    method_unit: dict = {self._name_sep.join((self._method_k_name, "unit")): self._get_method_unit(method = method)}
+                    
+                    # Construct dictionary
+                    result_as_dict: dict = {k_act_database: v_act_database,
+                                            k_act_code: v_act_code,
+                                            **{(self._name_sep.join((self._act_k_name, k))): v for k, v in act_as_dict.items()},
+                                            k_act_amount: act_amount,
+                                            k_flow_database: v_flow_database,
+                                            k_flow_code: v_flow_code,
+                                            **{(self._name_sep.join((self._flow_k_name, k))): v for k, v in flow_as_dict.items()},
+                                            k_flow_amount: flow_amount,
+                                            self._score_k_name: score,
+                                            self._method_k_name: method,
+                                            **method_unit}
+                    
+                self.results[result_type] += [{k: v for k, v in result_as_dict.items() if v is not None}]
+        
+        return self.results
+
+
     # Function to convert time delta in a readable, nice string
     def convert_timedelta(self, timedelta: datetime.timedelta) -> str:
         
@@ -446,7 +627,7 @@ class LCA_Calculation():
 
 lca_calculation: LCA_Calculation = LCA_Calculation(activities = acts,
                                                    methods = mets,
-                                                   cut_off_percentage = 0.01)
+                                                   cut_off_percentage = 0.1)
 lca_calculation.calculate(calculate_LCIA_scores = True,
                           extract_LCI_exchanges = False,
                           extract_LCI_emission_contribution = False,
@@ -454,7 +635,12 @@ lca_calculation.calculate(calculate_LCIA_scores = True,
                           calculate_LCIA_scores_of_exchanges = False,
                           calculate_LCIA_emission_contribution = True,
                           calculate_LCIA_process_contribution = False)
-results: list[tuple] = lca_calculation.results
+see = lca_calculation.results_raw
+results: dict[str, list[tuple]] = lca_calculation.get_results(extended = True)
+results_df: dict[str, pd.DataFrame] = {k: pd.DataFrame(v) for k, v in results.items()}
+results_df["LCIA_emission_contribution"].to_excel(here / "LCIA_emission_contribution.xlsx")
+results_df["LCIA_scores"].to_excel(here / "LCIA_scores.xlsx")
+
 # print(tuple(results["LCIA_emission_contribution"][0][0][2]))
 
 
