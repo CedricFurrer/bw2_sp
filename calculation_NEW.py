@@ -15,7 +15,7 @@ import bw2calc
 import bw2data
 import numpy as np
 import pandas as pd
-# from bw2calc.errors import NonsquareTechnosphere, EmptyBiosphere, AllArraysEmpty
+from bw2calc.errors import EmptyBiosphere, AllArraysEmpty
 import helper as hp
 
 
@@ -23,11 +23,12 @@ import helper as hp
 here: pathlib.Path = pathlib.Path(__file__).parent
 from utils import change_brightway_project_directory
 
-change_brightway_project_directory(str(here / "notebook" / "Brightway_projects"))
+here2: pathlib.Path = pathlib.Path("/home/f80856737/mnt/agroscope/Data-Work/27_Natural_Resources-RE/275.3 Ökobilanzen_Tools/Brightway2/Github/bw2_sp")
+change_brightway_project_directory(str(here2 / "notebook" / "Brightway2_projects"))
 project_name: str = "Food databases"
 bw2data.projects.set_current(project_name)
 
-acts: list = [m for m in bw2data.Database("AgriFootprint v6.3 - SimaPro")][0:10]
+acts: list = [m for m in bw2data.Database("AgriFootprint v6.3 - SimaPro")][0:1]
 mets: list[tuple] = [m for m in bw2data.methods if "SALCA" in m[0]]
 
 #%%
@@ -160,7 +161,9 @@ class LCA_Calculation():
         self.element_arrays: dict = {} # all contributions, LCI & LCIA, emission & process
         self.structured_arrays_for_emission_contribution: dict = {} # LCI emission contr, LCIA emission contr.
         self.structured_arrays_for_process_contribution: dict = {} # LCI process contr, LCIA process contr.
-
+        self._temporary_key_to_exchanges_mapping: dict = {}
+        self._temporary_score_results: dict = {}
+        
         # Keys to extract from the activity dicts
         self.keys_to_extract_from_BW_acts: tuple[str] = ("name",
                                                          "SimaPro_name",
@@ -591,7 +594,128 @@ class LCA_Calculation():
         
         # Return
         return structured_LCI_process_array
+    
+    
+    
+    # Function to retrieve the exchanges of an activity
+    def _get_exchanges(self,
+                      activity_key: tuple[str, str],
+                      activity_amount: float,
+                      level: (int | float)) -> tuple[tuple[tuple[str, str], float, (float | int)]]:
         
+        # Try to retrieve first from temporary dictionary and if successful directly return
+        if activity_key in self._temporary_key_to_exchanges_mapping:
+            
+            # Directly return
+            return tuple([(m[0], m[1] * activity_amount, level) for m in self._temporary_key_to_exchanges_mapping[activity_key]])
+        
+        # Retrieve activity
+        act: bw2data.backends.peewee.proxies.Activity = self._get_database_object(database = activity_key[0]).get(activity_key[1])
+        
+        # Retrieve list of exchanges
+        exchanges: bw2data.backends.pewee.proxies.Exchanges = act.exchanges()
+        
+        # Check the length of the exchanges list
+        if len(exchanges) == 0:
+            
+            # If it is 0, the current activity is of type biosphere. We return an empty list
+            return ()
+        
+        # Get the production amount from the list of exchanges
+        production_amount: list[float] = [m["amount"] for m in exchanges if m["type"] == "production"]
+        
+        # Raise error if no or more than one production exchange was found.
+        if len(production_amount) != 1:
+            raise ValueError("The list of exchanges for activity '{}' contains {} production exchange(s).".format(activity_key, len(production_amount)))
+        
+        # Calibrate exchange values to 1 activity amount
+        exchanges_for_1_activity_amount: list[tuple] = [(m["input"], (1 / production_amount[0] * m["amount"]) if production_amount != 0 else 0) for m in exchanges if m["type"] != "production"]
+        
+        # Add temporarily
+        self._temporary_key_to_exchanges_mapping[activity_key]: list[tuple] = exchanges_for_1_activity_amount
+        
+        # Return
+        return tuple([(m[0], m[1] * activity_amount, level) for m in self._temporary_key_to_exchanges_mapping[activity_key]])
+        
+    
+    
+    
+    # Support function to extract exchanges of an activity based on a specific level
+    def _extract_LCI_exchanges_of_activity_at_certain_level(self,
+                                                            activity_key: bw2data.backends.peewee.proxies.Activity,
+                                                            level: int) -> list[dict]:
+        
+        # Define the starting level
+        current_level: int = 0
+
+        # Initialize a new key to write exchange keys to that should be calculated in the next round
+        exchanges_at_level: dict = {current_level: ((activity_key, self.functional_amount, 0),)}
+        
+        # Extract exchanges as long/as many times as there are levels
+        while current_level < level:
+
+            # Extract all the relevant keys at the current level
+            current_exchanges: tuple[tuple, float] = exchanges_at_level[current_level]
+            
+            # Initialize a new list for the current level
+            exchanges_at_level[current_level + 1]: tuple = ()
+            
+            # Loop through each current exchange key and amount
+            for current_key, current_amount, respective_level in current_exchanges:
+                
+                # Check if the level of the current exchange matches the current level where we are, otherwise we don't need to go on and can simply move the exchange to the next round
+                if respective_level < current_level:
+                    
+                    # Simply move the exchange to the next round without searching
+                    exchanges_at_level[current_level + 1] += ((current_key, current_amount, respective_level),)
+                
+                else:
+                    # Extract all exchanges that come next for the current exchange
+                    next_exchanges: tuple[tuple] = self._get_exchanges(activity_key = current_key,
+                                                                       activity_amount = current_amount,
+                                                                       level = current_level + 1)
+                    
+                    # If no next exchanges have been found, add the current exchange
+                    if len(next_exchanges) == 0:
+                        
+                        # Add current exchange
+                        exchanges_at_level[current_level + 1] += ((current_key, current_amount, respective_level),)
+                    else:
+                        # Otherwise, add the new exchanges
+                        exchanges_at_level[current_level + 1] += next_exchanges
+                
+            # Check if we arrived at the end
+            if current_level >= level:
+                break
+                
+            else:
+                # Raise iterator
+                current_level += 1
+        
+        # Initialize a new list to store final exchanges to
+        exchanges_at_level_cleaned: dict = {}
+        
+        # Loop through each exchange
+        for flow_key, flow_amount, level in exchanges_at_level[max(list(exchanges_at_level.keys()))]:
+            
+            # Compile the ID tuple
+            ID: tuple = (
+                activity_key,
+                self.functional_amount,
+                flow_key
+                )
+            
+            # Initialize new key
+            if ID not in exchanges_at_level_cleaned:
+                exchanges_at_level_cleaned[ID]: float = float(0)
+            
+            # Add the amount
+            exchanges_at_level_cleaned[ID] += flow_amount
+            
+        # Return
+        return [k + (v, None, None) for k, v in exchanges_at_level_cleaned.items()]
+    
+    
         
     def calculate(self,
                   calculate_LCIA_scores: bool = True,
@@ -602,14 +726,12 @@ class LCA_Calculation():
                   calculate_LCIA_emission_contribution: bool = False,
                   calculate_LCIA_process_contribution: bool = False):
         
-        # Raise error if LCI exchanges should be extracted or scores should be calculated
-        if any((extract_LCI_exchanges, calculate_LCIA_scores_of_exchanges)): # !!! TODO
-            raise ValueError("Extraction of LCI exchanges and calculation of scores thereof is not yet implemented.")
-        
         # Add an instance where results will be saved to
         self.results_raw: dict = {self.name_LCIA_scores: [],
+                                  self.name_LCI_exchanges: [],
                                   self.name_LCI_emission_contributions: [],
                                   self.name_LCI_process_contributions: [],
+                                  self.name_LCIA_immediate_scores: [],
                                   self.name_LCIA_emission_contributions: [],
                                   self.name_LCIA_process_contributions: []
                                   }
@@ -646,7 +768,19 @@ class LCA_Calculation():
             
             # We then extract the inventory matrix
             inventory: np.matrix = lca_object.inventory
-
+            
+            # Extract LCI exchanges, if specified
+            # We also need to extract the exchanges if we calculate the immediate scores
+            if any((extract_LCI_exchanges, calculate_LCIA_scores_of_exchanges)):
+                
+                # Extract the LCI exchanges
+                LCI_exchanges_at_level: list[tuple] = self._extract_LCI_exchanges_of_activity_at_certain_level(activity_key = activity_key, level = self.exchange_level)
+                
+                # Add
+                if extract_LCI_exchanges:
+                    self.results_raw[self.name_LCI_exchanges] += LCI_exchanges_at_level
+            
+            
             # If we need to do any LCIA calculation, we need to do the following block
             # This however will only be done for LCIA score calculation, LCIA emission contribution and LCIA process contribution
             if any([calculate_LCIA_scores, calculate_LCIA_emission_contribution, calculate_LCIA_process_contribution]):
@@ -669,18 +803,35 @@ class LCA_Calculation():
                 # Loop through each characterized matrix and method to get the sum/LCIA score
                 for met, characterized_matrix in characterized_matrices.items():
                     
+                    # The score is simply the sum of the matrix
+                    score: float = characterized_matrix.sum()
+                    
                     # The ID tuple is always of length 5!
                     ID: tuple = (
                         act.key, # Key of the current activity
                         self.functional_amount, # The amount that was calculated
                         None, # Flow key, not used here
                         None, # Flow amount, not used here
-                        characterized_matrix.sum(), # The calculated impact assessment result
+                        score, # The calculated impact assessment result
                         met # The method we calculated the result for
                     ) 
                     
                     # Add to list in the result dictionary
                     self.results_raw[self.name_LCIA_scores] += [ID]
+                    
+                    # We add the calculated score to a temporary dict, with demand 1
+                    # This because we might use it further below
+                    if calculate_LCIA_scores_of_exchanges:
+                        
+                        # Check if activity key is already temporarily stored
+                        if activity_key not in self._temporary_score_results:
+                            
+                            # If not, initialize new dictionary
+                            self._temporary_score_results[activity_key]: dict = {}
+                        
+                        # Add the calculated result to it
+                        self._temporary_score_results[activity_key][met]: float = (1 / self.functional_amount * score) if self.functional_amount != 0 else 0
+                    
             
             # Prepare everything for the LCI and/or LCIA emission contribution
             if any((extract_LCI_emission_contribution, calculate_LCIA_emission_contribution)):                
@@ -790,6 +941,8 @@ class LCA_Calculation():
                         
                         # Add to the result dictionary
                         self.results_raw[self.name_LCIA_emission_contributions] += structured_array_cutoff_as_list
+                        
+                        
 
 
                     # Extract the LCIA process contribution, if indicated
@@ -823,8 +976,125 @@ class LCA_Calculation():
             
             if calculate_LCIA_scores:
                 print("      - {} LCIA score(s) from {} activity/ies & {} methods were calculated".format(len(self.activities)*len(self.methods), len(self.activities), len(self.methods)))
-    
-    
+        
+        # In case we want to calculate the scores of the exchanges, we need to go again through all exchanges and do the calculation
+        if calculate_LCIA_scores_of_exchanges:
+            
+            # Check if progress bar should be printed
+            if self.progress_bar:
+                
+                # Wrap progressbar around iterables
+                iterables: list[tuple] = hp.progressbar(self.results_raw[self.name_LCI_exchanges], )
+                
+            else:
+                # Otherwise, simply create iterable variable
+                iterables: list[tuple] = self.results_raw[self.name_LCI_exchanges]
+            
+            # Loop through all activities
+            for (act_key, act_amount, flow_key, flow_amount, _, _) in iterables:
+                
+                # Initialize a list to potentially store all methods for which calculation was unsuccessful
+                methods_for_which_no_scores_were_calculated: list[tuple] = []
+                
+                # Go again through all methods
+                for met in self.methods:
+                                        
+                    # Check if the score has already been calculated
+                    if self._temporary_score_results.get(flow_key, {}).get(met) is not None:
+                        
+                        # Construct and add tuple to raw results
+                        self.results_raw[self.name_LCIA_immediate_scores] += [(act_key,
+                                                                               act_amount,
+                                                                               flow_key,
+                                                                               flow_amount,
+                                                                               flow_amount * self._temporary_score_results[flow_key][met],
+                                                                               met
+                                                                               )]
+                        # Go to next
+                        continue
+                    
+                    # Retrieve characterization factor, if possible 
+                    cf: (float | None) = self._get_characterization_factors(method = met)
+                    
+                    # If successful, the current flow is of type biosphere and we can simply multiply the cf with the flow amount and go on
+                    if cf is not None:
+                        
+                        # Construct and add tuple to raw results
+                        self.results_raw[self.name_LCIA_immediate_scores] += [(act_key,
+                                                                               act_amount,
+                                                                               flow_key,
+                                                                               flow_amount,
+                                                                               flow_amount * cf,
+                                                                               met
+                                                                               )]
+                        # Go to next
+                        continue
+                    
+                    # Add to list
+                    methods_for_which_no_scores_were_calculated += [met]
+                
+                # If everything has already been successfully calculated, go to next activity
+                if methods_for_which_no_scores_were_calculated == []:
+                    continue
+                
+                # If we arrive here, we need to run through the matrix calculation
+                # First get the database the activity belongs to
+                database: str = act_key[0]
+
+                # Get the BW object,
+                try:
+                    # We try to construct the LCA object
+                    lca_object: bw2calc.lca.LCA = self._get_LCA_object(database = database)
+                
+                except AllArraysEmpty:  # !!! When does the AllArraysEmpty error show up?
+                    # , that means the current flow is of type biosphere
+                    # If we fail to construct the lca object because all arrays are empty, that means that the current flow belongs to a biopshere database
+                    # Since we already tried to do a simple cf calculation (see above), it means that the current flow is not characterized in the specific methods
+                    self.results_raw[self.name_LCIA_immediate_scores] += [(act_key,
+                                                                           act_amount,
+                                                                           flow_key,
+                                                                           flow_amount,
+                                                                           float(0),
+                                                                           m
+                                                                           ) for m in methods_for_which_no_scores_were_calculated]
+                    # We go on
+                    continue
+                
+                # ... to redo 2) the inventory matrix (which takes quite some time)
+                lca_object.redo_lci({flow_key: flow_amount})
+                
+                # We then extract the inventory matrix
+                inventory: np.matrix = lca_object.inventory
+                
+                # Initialize a temporary dictionary to store the characterized matrices to
+                characterized_matrices: dict = {}
+                
+                # Loop through each method and create the characterized matrices by multiplying the inventory matrix with the 
+                for met in methods_for_which_no_scores_were_calculated:
+                    
+                    # Build or simply get the matrix
+                    matrix = self._get_characterization_matrix(database = database, method = met)
+                    
+                    # Multiply the matrices
+                    characterized_matrices[met] = (matrix * inventory)
+                
+                # Loop through each characterized matrix and method to get the sum/LCIA score
+                for met, characterized_matrix in characterized_matrices.items():
+                    
+                    # The score is simply the sum of the matrix
+                    score: float = characterized_matrix.sum()
+                
+                    # Construct and add tuple to raw results
+                    self.results_raw[self.name_LCIA_immediate_scores] += [(act_key,
+                                                                           act_amount,
+                                                                           flow_key,
+                                                                           flow_amount,
+                                                                           score,
+                                                                           met
+                                                                           )]
+            
+            
+            
     
     def get_characterization_factors(self, methods: (list[tuple] | None) = None, extended: bool = True) -> list[dict]:
         
@@ -1128,21 +1398,24 @@ class LCA_Calculation():
             
         # Return string
         return string
-
+    
+    
 
 
 #%%
 lca_calculation: LCA_Calculation = LCA_Calculation(activities = acts,
                                                    methods = mets,
-                                                   cut_off_percentage = 0.1)
+                                                   functional_amount = 1,
+                                                   cut_off_percentage = 0.1,
+                                                   exchange_level = 1)
 
-lca_calculation.calculate(calculate_LCIA_scores = True,
-                          extract_LCI_exchanges = False,
-                          extract_LCI_emission_contribution = True,
-                          extract_LCI_process_contribution = True,
+lca_calculation.calculate(calculate_LCIA_scores = False,
+                          extract_LCI_exchanges = True,
+                          extract_LCI_emission_contribution = False,
+                          extract_LCI_process_contribution = False,
                           calculate_LCIA_scores_of_exchanges = False,
-                          calculate_LCIA_emission_contribution = True,
-                          calculate_LCIA_process_contribution = True)
+                          calculate_LCIA_emission_contribution = False,
+                          calculate_LCIA_process_contribution = False)
 
 results_raw: dict[str, list[dict]] = lca_calculation.results_raw
 results_extended: dict[str, list[dict]] = lca_calculation.get_results(extended = True)
@@ -1154,340 +1427,5 @@ characterization_factors = lca_calculation.get_characterization_factors(methods 
 
 #%%
 
-# class LCA_Calculation():
-    
-#     # Function to retrieve the production amount of an activity
-#     def get_production_amount(self,
-#                               activity: bw2data.backends.peewee.proxies.Activity) -> float:
-        
-#         # Check function input type
-#         hp.check_function_input_type(self.get_production_amount, locals())
-        
-#         # Try to retrieve first from temporary results and if successful directly return
-#         if self._temporary_key_to_production_amount_mapping.get(activity.key) is not None:
-            
-#             # Directly return
-#             return self._temporary_key_to_production_amount_mapping[activity.key]
-        
-#         # Directly receive the production amount from the activity, if possible
-#         production_amount_I: (float | int | None) = activity.get("production amount")
-        
-#         # Check if a value has been found with the first method
-#         if production_amount_I is not None:
-            
-#             # Add to temporary dictionary
-#             self._temporary_key_to_production_amount_mapping[activity.key]: float = float(production_amount_I)
-            
-#             # Return
-#             return float(production_amount_I)
-        
-#         # Extract the production exchange
-#         production_exchange: list[dict] = self.extract_production_exchange(activity)
-        
-#         # If the second method yields an empty list, the activity is of type biosphere
-#         # Check if the list is empty
-#         if production_exchange == []:
-            
-#             # We save the production amount as 1 value to the temporary dictionary
-#             self._temporary_key_to_production_amount_mapping[activity.key]: (float | int) = float(1)
-            
-#             # We return a 1
-#             return float(1)
-        
-#         else:
-#             # Otherwise we can only have one item in the list which is the production exchange
-#             # We extract the production amount from the dictionary
-#             production_amount_II: (float | int | None) = production_exchange[0].get("amount")
-            
-#             # We extract the allocation
-#             allocation: (float | int) = production_exchange[0].get("allocation")
-            
-#             # Check if the retrieved amount is None
-#             if production_amount_II is not None and allocation is not None:
-                
-#                 # If not, we were successful and write the amount to the temporary dictionary
-#                 self._temporary_key_to_production_amount_mapping[activity.key]: float = float(production_amount_II) * float(allocation)
-                
-#                 # And we return the value
-#                 return float(production_amount_II)
-            
-#             else:
-#                 # If we were unable to retrieve the amount (e.g. because there is no amount key)
-#                 # we need to raise an error
-#                 if production_amount_II is None:
-#                     raise ValueError("Production amount of activity '" + str(activity.key) + "' could not be retrieved.")
-                    
-#                 # If we were unable to retrieve the alloation (e.g. because there is no allocation key)
-#                 # we need to raise an error
-#                 if allocation is None:
-#                     raise ValueError("Allocation of activity '" + str(activity.key) + "' could not be retrieved.")
-            
-            
-    
-    
-    
-#     # Function to extract the non production exchanges of an activity
-#     def extract_non_production_exchanges(self,
-#                                          activity: bw2data.backends.peewee.proxies.Activity) -> list[dict]:
-        
-#         # Check function input type
-#         hp.check_function_input_type(self.extract_non_production_exchanges, locals())
-        
-#         # Load BW mapping if not yet specified
-#         if not self.Brightway_mappings_loaded:
-#             self.load_Brightway_mappings()
-        
-#         # Extract all exchanges as dictionary
-#         non_production_exchanges_orig: list[dict] = [n.as_dict() for n in activity.exchanges() if n["type"] != "production"]
-        
-#         # Overwrite existing information with information from the mapping
-#         non_production_exchanges: list[dict] = [{**n,
-#                                                  **self.key_to_dict_mapping[n["input"]]} for n in non_production_exchanges_orig]
-        
-#         # Return
-#         return non_production_exchanges
-
-
-    
-#     # Function to extract production exchanges of an activity
-#     def extract_production_exchange(self,
-#                                     activity: bw2data.backends.peewee.proxies.Activity) -> list[dict]:
-        
-#         # Check function input type
-#         hp.check_function_input_type(self.extract_production_exchange, locals())
-        
-#         # Load BW mapping if not yet specified
-#         if not self.Brightway_mappings_loaded:
-#             self.load_Brightway_mappings()
-            
-#         # Extract all exchanges as dictionary
-#         production_exchanges: list = [n.as_dict() for n in activity.production()]
-
-        
-#         # If the list is empty, that means the activity is a biosphere flow
-#         # In that case we return an empty list
-#         if production_exchanges == []:
-#             return []
-        
-#         # Raise error if more than one production exchange was identified.
-#         # This should never be the case!
-#         assert len(production_exchanges) <= 1, str(len(production_exchanges)) + " production exchange(s) found. Valid is to have exactly one production exchange."
-        
-#         # Extract the only production exchange from the list
-#         production_exchange_orig: dict = production_exchanges[0]
-        
-#         # Merge all relevant information together in a dictionary to be returned
-#         production_exchange: dict = {"input": activity.key,
-#                                      **production_exchange_orig,
-#                                      **self.key_to_dict_mapping[activity.key]}
-        
-#         # Return
-#         return [production_exchange]
-        
-    
-    
-#     # !!! Newly added since the previous version was erroneous
-#     # Support function to extract exchanges of an activity based on a specific level
-#     def extract_LCI_exchanges_of_activity_at_certain_level(self,
-#                                                            activity: bw2data.backends.peewee.proxies.Activity,
-#                                                            level: int) -> list[dict]:
-        
-#         # Check function input type
-#         hp.check_function_input_type(self.extract_LCI_exchanges_of_activity_at_certain_level, locals())
-        
-#         # Load mappings if not yet done
-#         if not self.Brightway_mappings_loaded:
-#             self.load_Brightway_mappings()
-        
-#         # Define the starting level
-#         current_level: int = 0
-
-#         # Initialize a new key to write exchange keys to that should be calculated in the next round
-#         exchanges_at_level: dict = {current_level: ((self.key_to_activity_mapping[activity.key], activity.key, self.functional_amount, 1),)}
-        
-#         # Extract exchanges as long/as many times as there are levels
-#         while current_level < level:
-
-#             # Extract all the relevant keys at the current level
-#             current_exchanges: tuple[tuple, float] = exchanges_at_level[current_level]
-            
-#             # Initialize a new list for the current level
-#             exchanges_at_level[current_level + 1]: tuple = ()
-            
-#             # Loop through each current exchange key and amount
-#             for current_exchange, current_key, current_amount, respective_level in current_exchanges:
-                
-#                 # Check if the level of the current exchange matches the current level where we are, otherwise we don't need to go on and can simply move the exchange to the next round
-#                 if respective_level < current_level:
-                    
-#                     # Simply move the exchange to the next round without searching
-#                     exchanges_at_level[current_level + 1] += ((current_exchange, current_key, current_amount, respective_level),)
-#                     continue
-                
-#                 # First get the activity corresponding to the current exchange
-#                 current_exchange_as_obj: bw2data.backends.peewee.proxies.Activity = self.key_to_activity_mapping[current_key]
-                
-#                 # Get the current production amount
-#                 current_production_amount: float = float(self.get_production_amount(current_exchange_as_obj))
-                
-#                 # Extract all exchanges that come next for the current exchange
-#                 next_exchanges: list[dict] = self.extract_non_production_exchanges(current_exchange_as_obj)
-                
-#                 # Check if we have found next exchanges
-#                 if next_exchanges == []:
-                    
-#                     # If we have not found any next exchanges, we simply append the current exchange to the next level to keep it
-#                     exchanges_at_level[current_level + 1] += ((current_exchange, current_key, current_amount, respective_level),)
-#                 else:
-#                     # Append the keys and the amounts for the next level
-#                     exchanges_at_level[current_level + 1] += tuple([(m,
-#                                                                      m["input"],
-#                                                                      (current_amount / current_production_amount * m["amount"]) if current_production_amount != 0 else 0,
-#                                                                      current_level + 1) for m in next_exchanges])
-                
-#             # Check if we arrived at the end
-#             if current_level >= level:
-#                 break
-                
-#             else:
-#                 # Raise iterator
-#                 current_level += 1
-        
-#         at_level: list[dict] = [{**self.add_str_to_dict_keys(exc_dict, self.key_name_flow),
-#                                  self.key_name_flow + "_amount": exc_amount,
-#                                  self.key_name_level: exc_level} for exc_dict, exc_key, exc_amount, exc_level in exchanges_at_level[level]]
-        
-#         # Retrieve the activity information
-#         activity_info: dict = self.key_to_dict_mapping[activity.key]
-        
-#         # Add string 'activity' to the beginning of the dictionary keys
-#         activity_info_str_added: dict = self.add_str_to_dict_keys({**activity_info,
-#                                                                    "amount": self.functional_amount}, self.key_name_activity)
-        
-#         # Merge all relevant information together in a dictionary to be returned
-#         compiled: list[dict] = [{**activity_info_str_added,
-#                                  **m} for m in at_level]
-        
-#         return compiled
-    
-    
-    
-    
-    
-
-#     # Function to extract the exchanges for each of the activity
-#     def extract_LCI_exchanges(self, exchange_level: (int | None) = None, _return: bool = False):
-        
-#         # Check function input type
-#         hp.check_function_input_type(self.extract_LCI_exchanges, locals())
-        
-#         # Save time when calculation starts
-#         if self.progress_bar:
-#             start: datetime.datetime = datetime.datetime.now()
-        
-#         # Select the exchange level, either directly provided by this function or from the init
-#         self.level_of_LCI_exchanges: int = self.exchange_level if exchange_level is None else exchange_level
-        
-#         # Raise error if level is smaller than 1
-#         if self.level_of_LCI_exchanges < 1:
-#             raise ValueError("Input variable 'exchange_level' needs to be greater than 1 but is currently '" + str(self.level_of_LCI_exchanges) + "'.")
-        
-#         # Initialize new dictionary to save the LCIA score results to
-#         extracted_LCI_exchanges: list = []
-        
-#         # Get activities where exchanges should be extracted from and wrap progress bar around it
-#         activities: list = hp.progressbar(self.activities, prefix = "\nExtract LCI exchanges (level " + str(self.level_of_LCI_exchanges) + ") ...") if self.progress_bar else self.activities
-        
-#         # Loop through each activity
-#         for act in activities:
-            
-#             # Extract the exchanges at a certain level
-#             exchanges_of_activity_at_certain_level: list[dict] = self.extract_LCI_exchanges_of_activity_at_certain_level(act, self.level_of_LCI_exchanges)
-            
-#             # Write to results dictionary
-#             extracted_LCI_exchanges += exchanges_of_activity_at_certain_level
-          
-#         # Print summary statement
-#         if self.progress_bar:
-#             print("  - Extraction of " + str(len(extracted_LCI_exchanges)) + " LCI exchange(s) at level " + str(self.level_of_LCI_exchanges) + " (from " + self.len_act + " activity/ies) took " + self.convert_timedelta(datetime.datetime.now() - start))
-    
-#         # Check if the results should be returned
-#         if not _return:
-            
-#             # Write to or update the result attribute
-#             self.results[self.name_LCI_exchanges] = extracted_LCI_exchanges
-            
-#             # Return a None
-#             return None
-        
-#         else:
-#             # If we simply want to return, we do return the list with the dictionaries
-#             # In that case, we do not update the results attribute!
-#             return extracted_LCI_exchanges
-        
-        
-    
-    
-    
-#     # Calculate the LCIA scores of exchanges of activities
-#     def calculate_LCIA_scores_of_exchanges(self, exchange_level: (int | None) = None) -> None:
-        
-#         # Check function input type
-#         hp.check_function_input_type(self.calculate_LCIA_scores_of_exchanges, locals())
-        
-#         # Save time when calculation starts
-#         if self.progress_bar:
-#             start: datetime.datetime = datetime.datetime.now()
-        
-#         # Select the exchange level, either directly provided by this function or from the init
-#         self.level_of_LCIA_exchanges: int = self.exchange_level if exchange_level is None else exchange_level
-        
-#         # Raise error if level is smaller than 1
-#         if self.level_of_LCIA_exchanges < 1:
-#             raise ValueError("Input variable 'exchange_level' needs to be greater than 1 but is currently '" + str(self.level_of_LCIA_exchanges) + "'.")
-        
-#         # If exchanges have not yet been extracted (= None), extract them first at the current level
-#         if self.results.get(self.name_LCI_exchanges) is None:
-#             extracted_LCI_exchanges: list[dict] = self.extract_LCI_exchanges(exchange_level = self.level_of_LCIA_exchanges,
-#                                                                              _return = True)
-            
-#         elif self.results.get(self.name_LCI_exchanges) is not None and (self.level_of_LCIA_exchanges == self.level_of_LCI_exchanges):
-#             extracted_LCI_exchanges: list[dict] = copy.deepcopy(self.results[self.name_LCI_exchanges])
-            
-#         else:
-#             extracted_LCI_exchanges: list[dict] = self.extract_LCI_exchanges(exchange_level = self.level_of_LCIA_exchanges,
-#                                                                              _return = True)
-
-#         # Get all the combinations that should be calculated
-#         method_exc_combinations: list = [(m, n) for m in self.methods for n in extracted_LCI_exchanges]
-        
-#         # Check if progress bar should be printed to console
-#         if self.progress_bar:
-            
-#             # Wrap progress bar around iterator
-#             method_exc_combinations: list[dict] = hp.progressbar(method_exc_combinations, prefix = "\nExtract LCIA scores of exchanges (level " + str(self.level_of_LCIA_exchanges) + ") ...")
-          
-#         # Initialize new results list
-#         self.results[self.name_LCIA_immediate_scores]: list = []
-        
-#         # Loop through each method, exchange key and exchange amount combination that should be calculated
-#         for method, exc in method_exc_combinations:
-            
-#             # Calculate the score of the exchange
-#             score_dict: dict = self.calculate_LCIA_score(exc[self.key_name_flow + "_input"],
-#                                                          method,
-#                                                          exc[self.key_name_flow + "_amount"])
-#             # Add to results
-#             self.results[self.name_LCIA_immediate_scores] += [{**exc,
-#                                                               self.key_name_score: score_dict[self.key_name_score],
-#                                                               self.key_name_score_unit: score_dict[self.key_name_score_unit],
-#                                                               self.key_name_method: method}]
-            
-#         # Print summary statement
-#         if self.progress_bar:
-#             print("  - Calculation of " + str(len(self.results[self.name_LCIA_immediate_scores])) + " LCIA score(s) (from " + str(len(extracted_LCI_exchanges)) + " exchange(s) at level " + str(self.level_of_LCIA_exchanges) + " & " + self.len_met + " method(s)) took " + self.convert_timedelta(datetime.datetime.now() - start))
-        
-    
-    
     
 
