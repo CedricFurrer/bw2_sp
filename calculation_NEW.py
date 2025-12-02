@@ -4,10 +4,7 @@ import os
 if __name__ == "__main__":
     os.chdir(pathlib.Path(__file__).parent)
 
-# import re
 import ast
-# import copy
-# import scipy
 import numpy
 import pathlib
 import datetime
@@ -15,21 +12,9 @@ import bw2calc
 import bw2data
 import numpy as np
 import pandas as pd
-from bw2calc.errors import EmptyBiosphere, AllArraysEmpty
+from bw2calc.errors import OutsideTechnosphere
 import helper as hp
 
-
-#%%
-here: pathlib.Path = pathlib.Path(__file__).parent
-from utils import change_brightway_project_directory
-
-here2: pathlib.Path = pathlib.Path("/home/f80856737/mnt/agroscope/Data-Work/27_Natural_Resources-RE/275.3 Ökobilanzen_Tools/Brightway2/Github/bw2_sp")
-change_brightway_project_directory(str(here2 / "notebook" / "Brightway2_projects"))
-project_name: str = "Food databases"
-bw2data.projects.set_current(project_name)
-
-acts: list = [m for m in bw2data.Database("AgriFootprint v6.3 - SimaPro")][0:1]
-mets: list[tuple] = [m for m in bw2data.methods if "SALCA" in m[0]]
 
 #%%
 
@@ -161,6 +146,8 @@ class LCA_Calculation():
         self.element_arrays: dict = {} # all contributions, LCI & LCIA, emission & process
         self.structured_arrays_for_emission_contribution: dict = {} # LCI emission contr, LCIA emission contr.
         self.structured_arrays_for_process_contribution: dict = {} # LCI process contr, LCIA process contr.
+        self.method_arrays_for_LCIA_emission_contribution: dict = {} # LCIA emission contr.
+        self.method_arrays_for_LCIA_process_contribution: dict = {} # LCIA process contr.
         self._temporary_key_to_exchanges_mapping: dict = {}
         self._temporary_score_results: dict = {}
         
@@ -190,14 +177,14 @@ class LCA_Calculation():
     def _get_database_object(self, database: str) -> bw2data.Database:
         
         # Simply return, if already existing
-        if database in self.database_objects:
+        if self.database_objects.get(database) is not None:
             return self.database_objects[database]
         
         # Initialize the object
         obj: bw2data.Database = bw2data.Database(database)
         
         # Add to dictionary, temporarily
-        self.database_objects[database] = obj
+        self.database_objects[database]: bw2data.Database = obj
         
         # Return the object
         return obj
@@ -206,14 +193,14 @@ class LCA_Calculation():
     def _get_method_object(self, method: tuple[str]) -> bw2data.Method:
         
         # Simply return, if already existing
-        if method in self.method_objects:
+        if self.method_objects.get(method) is not None:
             return self.method_objects[method]
         
         # Initialize the object
         obj: bw2data.Method = bw2data.Method(method)
         
         # Add to dictionary, temporarily
-        self.method_objects[method] = obj
+        self.method_objects[method]: bw2data.Method = obj
         
         # Return the object
         return obj
@@ -222,7 +209,7 @@ class LCA_Calculation():
     def _get_method_unit(self, method: tuple[str]) -> str:
         
         # Simply return, if already existing
-        if method in self.method_units:
+        if self.method_units.get(method) is not None:
             return self.method_units[method]
         
         # Get or initialize the method object
@@ -230,7 +217,7 @@ class LCA_Calculation():
         method_unit: str = method_obj.metadata["unit"]
 
         # Add to dictionary, temporarily
-        self.method_units[method] = method_unit
+        self.method_units[method]: str = method_unit
         
         # Return the method unit as string
         return method_unit
@@ -239,20 +226,20 @@ class LCA_Calculation():
     def _load_characterization_factors(self, method: tuple[str]) -> None:
         
         # Simply return, if already existing
-        if method in self.characterization_factors:
+        if self.characterization_factors.get(method) is not None:
             return
         
         # Get method object
         method_obj: bw2data.Method = self._get_method_object(method = method)
         
         # Initialize a new method dictionary
-        self.characterization_factors: dict[tuple, dict[tuple[str, str], float]] = {method: {}}
+        self.characterization_factors[method]: dict[tuple, dict[tuple[str, str], float]] = {}
         
         # Loop through each characterization factor for each flow individually
         for key, cf in method_obj.load():
             
             # Check if key exists, if not create one with a 0 amount
-            if key not in self.characterization_factors[method]:
+            if self.characterization_factors[method].get(key) is None:
                 self.characterization_factors[method][key]: float = float(0)
                 
             # Add to the existing CF
@@ -271,7 +258,7 @@ class LCA_Calculation():
     def _get_act_as_dict(self, act_key: tuple[str, str], keys_to_extract: (tuple[str] | None) = None) -> dict:
         
         # Simply return, if already existing
-        if act_key in self.activities_as_dict:
+        if self.activities_as_dict.get(act_key) is not None:
             return self.activities_as_dict[act_key]
         
         # Retrieve the activity object
@@ -290,7 +277,7 @@ class LCA_Calculation():
     def _get_LCA_object(self, database: str) -> bw2calc.lca.LCA:
         
         # Simply return, if already existing
-        if database in self.lca_objects:
+        if self.lca_objects.get(database) is not None:
             return self.lca_objects[database]
         
         # Extract first inventory and method to then initialise lca object
@@ -330,7 +317,7 @@ class LCA_Calculation():
     def _get_characterization_matrix(self, database: str, method: str):
         
         # Simply return if already existing
-        if database in self.characterization_matrices:
+        if self.characterization_matrices.get(database) is not None:
             return self.characterization_matrices[database][method]
 
         # Otherwise, create BW object and matrices
@@ -365,7 +352,7 @@ class LCA_Calculation():
         
         # Simply return if already existing
         if self.activity_dicts_as_arrays.get(database) is not None:
-            return self.activitry_dicts_as_arrays[database]
+            return self.activity_dicts_as_arrays[database]
         
         # Retrieve the lca object
         lca_object: bw2calc.lca.LCA = self._get_LCA_object(database = database)
@@ -454,7 +441,7 @@ class LCA_Calculation():
     def _get_structured_array_for_LCI_emission_contribution(self, database: str) -> np.array:
         
         # If already existing, simply return
-        if database in self.structured_arrays_for_emission_contribution:
+        if self.structured_arrays_for_emission_contribution.get(database) is not None:
             return self.structured_arrays_for_emission_contribution[database][None]
         
         # Get the biosphere dictionary as an array
@@ -506,7 +493,7 @@ class LCA_Calculation():
     def _get_structured_array_for_LCI_process_contribution(self, database: str) -> np.array:
         
         # If already existing, simply return
-        if database in self.structured_arrays_for_process_contribution:
+        if self.structured_arrays_for_process_contribution.get(database) is not None:
             return self.structured_arrays_for_process_contribution[database][None]
         
         # Get the activity dictionary as an array
@@ -556,7 +543,6 @@ class LCA_Calculation():
         
         
         
-        
     def _get_structured_array_for_LCIA_emission_contribution(self, database: str, method: tuple) -> np.array:
         
         # If already existing, simply return
@@ -564,13 +550,13 @@ class LCA_Calculation():
             return self.structured_arrays_for_emission_contribution[database][method]
         
         # Retrieve or build the initial structured emission array
-        structured_LCI_emission_array: np.array = self._get_structured_array_for_LCI_emission_contribution(database = database)
+        structured_LCI_emission_array: np.array = self._get_structured_array_for_LCI_emission_contribution(database = database).copy() # !!! We need this copy right now, but it slows calculation down. Alternative?
     
         # Overwrite the method array (None's) with the method
         structured_LCI_emission_array["method"]: np.array = self._get_element_array(element = str(method), length = len(structured_LCI_emission_array["value"]), dtype = "U")
     
         # Add temporarily
-        self.structured_arrays_for_emission_contribution[database][method]: np.array = structured_LCI_emission_array
+        self.structured_arrays_for_emission_contribution[database][method]: np.array = structured_LCI_emission_array.copy() 
         
         # Return
         return structured_LCI_emission_array
@@ -584,7 +570,7 @@ class LCA_Calculation():
             return self.structured_arrays_for_process_contribution[database][method]
         
         # Retrieve or build the initial structured process array
-        structured_LCI_process_array: np.array = self._get_structured_array_for_LCI_process_contribution(database = database)
+        structured_LCI_process_array: np.array = self._get_structured_array_for_LCI_process_contribution(database = database).copy() # !!! We need this copy right now, but it slows calculation down. Alternative?
     
         # Overwrite the method array (None's) with the method
         structured_LCI_process_array["method"]: np.array = self._get_element_array(element = str(method), length = len(structured_LCI_process_array["value"]), dtype = "U")
@@ -593,7 +579,7 @@ class LCA_Calculation():
         self.structured_arrays_for_process_contribution[database][method]: np.array = structured_LCI_process_array
         
         # Return
-        return structured_LCI_process_array
+        return self.structured_arrays_for_process_contribution[database][method]
     
     
     
@@ -604,7 +590,7 @@ class LCA_Calculation():
                       level: (int | float)) -> tuple[tuple[tuple[str, str], float, (float | int)]]:
         
         # Try to retrieve first from temporary dictionary and if successful directly return
-        if activity_key in self._temporary_key_to_exchanges_mapping:
+        if self._temporary_key_to_exchanges_mapping.get(activity_key) is not None:
             
             # Directly return
             return tuple([(m[0], m[1] * activity_amount, level) for m in self._temporary_key_to_exchanges_mapping[activity_key]])
@@ -706,7 +692,7 @@ class LCA_Calculation():
                 )
             
             # Initialize new key
-            if ID not in exchanges_at_level_cleaned:
+            if exchanges_at_level_cleaned.get(ID) is None:
                 exchanges_at_level_cleaned[ID]: float = float(0)
             
             # Add the amount
@@ -738,7 +724,7 @@ class LCA_Calculation():
         
         # Save time when calculation starts
         if self.progress_bar:
-            start: datetime.datetime = datetime.datetime.now()
+            start_round_1: datetime.datetime = datetime.datetime.now()
         
         # Retrieve the combinations that should be calculated
         activities: list = self.activities
@@ -824,7 +810,7 @@ class LCA_Calculation():
                     if calculate_LCIA_scores_of_exchanges:
                         
                         # Check if activity key is already temporarily stored
-                        if activity_key not in self._temporary_score_results:
+                        if self._temporary_score_results.get(activity_key) is None:
                             
                             # If not, initialize new dictionary
                             self._temporary_score_results[activity_key]: dict = {}
@@ -841,13 +827,13 @@ class LCA_Calculation():
                 
                 # Prepare an array with the activity key of the length of the dummy emission contribution array
                 emission_contribution_activity_key_array: np.array = self._get_element_array(str(activity_key), len(_dummy_structured_emission_array["activity_key"]), dtype = "U")
-            
-            
+                
+                
             # Extract the LCI emission contribution
             if extract_LCI_emission_contribution:
                 
                 # Extract the LCI emission contribution as the sum of the inventory matrix
-                LCI_emission_contribution_array: np.array = np.array(inventory.sum(axis = 1))[:, 0] # !!! Correct?
+                LCI_emission_contribution_array: np.array = np.array(inventory.sum(axis = 1))[:, 0]
                 
                 # Build or retrieve the structured emission array
                 structured_array: np.array = self._get_structured_array_for_LCI_emission_contribution(database = database)
@@ -883,8 +869,8 @@ class LCA_Calculation():
             # Extract the LCI process contribution
             if extract_LCI_process_contribution:
                 
-                # Extract the LCI process contribution as the sum of the transposed inventory matrix # !!!
-                LCI_process_contribution_array: np.array = np.array(inventory.transpose().sum(axis = 1))[:, 0] # !!! Correct?
+                # Extract the LCI process contribution as the sum of the transposed inventory matrix
+                LCI_process_contribution_array: np.array = np.array(inventory.transpose().sum(axis = 1))[:, 0]
                 
                 # Build or retrieve the structured process array
                 structured_array: np.array = self._get_structured_array_for_LCI_process_contribution(database = database)
@@ -916,15 +902,12 @@ class LCA_Calculation():
                     
                     # Extract the LCIA emission contribution, if indicated
                     if calculate_LCIA_emission_contribution:
-                        
-                        # time: tuple = ()
-                        # time += (datetime.datetime.now(),) # !!!
-                        # print([(time[m] - time[m-1]).total_seconds() for m in list(range(len(time)))[1:]])
-                        
+
                         # Extract the LCIA emission contribution as the sum of the characterized matrix
                         LCIA_emission_contribution_array: np.array = np.array(characterized_matrix.sum(axis = 1))[:, 0]
                         
                         # Build or retrieve the structured emission array
+                        # structured_array: np.array = self._get_structured_array_for_LCIA_emission_contribution(database = database, method = met)
                         structured_array: np.array = self._get_structured_array_for_LCIA_emission_contribution(database = database, method = met)
                         
                         # Overwrite the activity key with the current activity key
@@ -972,7 +955,12 @@ class LCA_Calculation():
                         
         # Print summary statement(s)
         if self.progress_bar:
-            print("  - Calculation/extraction time: {}".format(self.convert_timedelta(datetime.datetime.now() - start)))
+            
+            # Save current time
+            end_round_1: datetime.datetime = datetime.datetime.now()
+            
+            # Print statement
+            print("  - Calculation time: {}".format(self.convert_timedelta(end_round_1 - start_round_1)))
             
             if calculate_LCIA_scores:
                 print("      - {} LCIA score(s) from {} activity/ies & {} methods were calculated".format(len(self.activities)*len(self.methods), len(self.activities), len(self.methods)))
@@ -984,15 +972,20 @@ class LCA_Calculation():
             if self.progress_bar:
                 
                 # Wrap progressbar around iterables
-                iterables: list[tuple] = hp.progressbar(self.results_raw[self.name_LCI_exchanges], )
+                iterables: list[tuple] = hp.progressbar(self.results_raw[self.name_LCI_exchanges], prefix = "\nCalculate LCIA scores of exchanges ...")
                 
             else:
                 # Otherwise, simply create iterable variable
                 iterables: list[tuple] = self.results_raw[self.name_LCI_exchanges]
             
+            # To calculate the LCIA scores for exchanges, we need to preload the characterization factors
+            # This is a sacrification, BUT it will bring much more value if there are many exchanges to be calculated because we can omit the try, except statement (LCA calculation) if we already identify biosphere flows early
+            for met in self.methods:
+                self._load_characterization_factors(method = met)
+            
             # Loop through all activities
             for (act_key, act_amount, flow_key, flow_amount, _, _) in iterables:
-                
+                                
                 # Initialize a list to potentially store all methods for which calculation was unsuccessful
                 methods_for_which_no_scores_were_calculated: list[tuple] = []
                 
@@ -1014,7 +1007,7 @@ class LCA_Calculation():
                         continue
                     
                     # Retrieve characterization factor, if possible 
-                    cf: (float | None) = self._get_characterization_factors(method = met)
+                    cf: (float | None) = self.characterization_factors[met].get(flow_key)                    
                     
                     # If successful, the current flow is of type biosphere and we can simply multiply the cf with the flow amount and go on
                     if cf is not None:
@@ -1032,6 +1025,7 @@ class LCA_Calculation():
                     
                     # Add to list
                     methods_for_which_no_scores_were_calculated += [met]
+
                 
                 # If everything has already been successfully calculated, go to next activity
                 if methods_for_which_no_scores_were_calculated == []:
@@ -1045,11 +1039,14 @@ class LCA_Calculation():
                 try:
                     # We try to construct the LCA object
                     lca_object: bw2calc.lca.LCA = self._get_LCA_object(database = database)
+                    
+                    # and to redo the inventory matrix (which takes quite some time)
+                    lca_object.redo_lci({flow_key: flow_amount})
                 
-                except AllArraysEmpty:  # !!! When does the AllArraysEmpty error show up?
-                    # , that means the current flow is of type biosphere
-                    # If we fail to construct the lca object because all arrays are empty, that means that the current flow belongs to a biopshere database
+                except OutsideTechnosphere:
+                    # If we fail to redo the lca because the key is outside of the technosphere, that means that the current flow belongs to a biopshere database
                     # Since we already tried to do a simple cf calculation (see above), it means that the current flow is not characterized in the specific methods
+                    # We can simply add a 0 now
                     self.results_raw[self.name_LCIA_immediate_scores] += [(act_key,
                                                                            act_amount,
                                                                            flow_key,
@@ -1060,14 +1057,9 @@ class LCA_Calculation():
                     # We go on
                     continue
                 
-                # ... to redo 2) the inventory matrix (which takes quite some time)
-                lca_object.redo_lci({flow_key: flow_amount})
                 
                 # We then extract the inventory matrix
                 inventory: np.matrix = lca_object.inventory
-                
-                # Initialize a temporary dictionary to store the characterized matrices to
-                characterized_matrices: dict = {}
                 
                 # Loop through each method and create the characterized matrices by multiplying the inventory matrix with the 
                 for met in methods_for_which_no_scores_were_calculated:
@@ -1076,10 +1068,7 @@ class LCA_Calculation():
                     matrix = self._get_characterization_matrix(database = database, method = met)
                     
                     # Multiply the matrices
-                    characterized_matrices[met] = (matrix * inventory)
-                
-                # Loop through each characterized matrix and method to get the sum/LCIA score
-                for met, characterized_matrix in characterized_matrices.items():
+                    characterized_matrix = (matrix * inventory)
                     
                     # The score is simply the sum of the matrix
                     score: float = characterized_matrix.sum()
@@ -1092,8 +1081,7 @@ class LCA_Calculation():
                                                                            score,
                                                                            met
                                                                            )]
-            
-            
+
             
     
     def get_characterization_factors(self, methods: (list[tuple] | None) = None, extended: bool = True) -> list[dict]:
@@ -1162,6 +1150,10 @@ class LCA_Calculation():
             self.results_extended: dict = {k: [] for k in list(self.results_raw.keys()).copy()}
         else:
             self.results_simple: dict = {k: [] for k in list(self.results_raw.keys()).copy()}
+        
+        # Print statement
+        print("\n-----")
+        print("Processing results...") if not extended else print("Processing results, incl. retrieving of activity meta data")
         
         # Loop through the results individually
         for result_type, results in self.results_raw.items():
@@ -1235,6 +1227,9 @@ class LCA_Calculation():
                 
                     # Add the constructed dictionary to the list
                     self.results_extended[result_type] += [{k: v for k, v in result_as_dict.items() if v is not None}]
+        
+        # Print statement
+        print("Completed")
         
         # Return
         if extended:
@@ -1403,29 +1398,39 @@ class LCA_Calculation():
 
 
 #%%
-lca_calculation: LCA_Calculation = LCA_Calculation(activities = acts,
-                                                   methods = mets,
-                                                   functional_amount = 1,
-                                                   cut_off_percentage = 0.1,
-                                                   exchange_level = 1)
-
-lca_calculation.calculate(calculate_LCIA_scores = False,
-                          extract_LCI_exchanges = True,
-                          extract_LCI_emission_contribution = False,
-                          extract_LCI_process_contribution = False,
-                          calculate_LCIA_scores_of_exchanges = False,
-                          calculate_LCIA_emission_contribution = False,
-                          calculate_LCIA_process_contribution = False)
-
-results_raw: dict[str, list[dict]] = lca_calculation.results_raw
-results_extended: dict[str, list[dict]] = lca_calculation.get_results(extended = True)
-results_simple: dict[str, list[dict]] = lca_calculation.get_results(extended = False)
-lca_calculation.write_results(path = here, filename = None, use_timestamp_in_filename = True, extended = True)
-characterization_factors = lca_calculation.get_characterization_factors(methods = list(bw2data.methods)[0:2], extended = True)
-characterization_factors = lca_calculation.get_characterization_factors(methods = None, extended = False)
-
-
-#%%
-
+# if __name__ == "__main__":
     
+#     here: pathlib.Path = pathlib.Path(__file__).parent
+#     from utils import change_brightway_project_directory
+    
+#     # here2: pathlib.Path = pathlib.Path("/home/f80856737/mnt/agroscope/Data-Work/27_Natural_Resources-RE/275.3 Ökobilanzen_Tools/Brightway2/Github/bw2_sp")
+#     change_brightway_project_directory(str(here / "notebook" / "Brightway2_projects"))
+#     project_name: str = "Food databases"
+#     bw2data.projects.set_current(project_name)
+    
+#     acts: list = [m for m in bw2data.Database("AgriFootprint v6.3 - SimaPro")][0:100]
+#     mets: list[tuple] = [m for m in bw2data.methods if "SALCA" in m[0]]
+    
+#     lca_calculation: LCA_Calculation = LCA_Calculation(activities = acts,
+#                                                        methods = mets,
+#                                                        functional_amount = 1,
+#                                                        cut_off_percentage = 0.1,
+#                                                        exchange_level = 1)
+    
+#     lca_calculation.calculate(calculate_LCIA_scores = True,
+#                               extract_LCI_exchanges = True,
+#                               extract_LCI_emission_contribution = True,
+#                               extract_LCI_process_contribution = True,
+#                               calculate_LCIA_scores_of_exchanges = True,
+#                               calculate_LCIA_emission_contribution = True,
+#                               calculate_LCIA_process_contribution = True)
+    
+#     results_raw: dict[str, list[dict]] = lca_calculation.results_raw
+#     results_extended: dict[str, list[dict]] = lca_calculation.get_results(extended = True)
+#     results_simple: dict[str, list[dict]] = lca_calculation.get_results(extended = False)
+#     lca_calculation.write_results(path = here, filename = None, use_timestamp_in_filename = True, extended = True)
+#     characterization_factors_selected: list[dict] = lca_calculation.get_characterization_factors(methods = list(bw2data.methods)[0:2], extended = True)
+#     characterization_factors_all: list[dict] = lca_calculation.get_characterization_factors(methods = None, extended = True)
+#     pd.DataFrame(characterization_factors_all).to_excel(here / "Characterization_factors.xlsx")
+
 
