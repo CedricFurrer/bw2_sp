@@ -36,6 +36,7 @@ LCI_agribalyse_simapro_folderpath: pathlib.Path = here.parent / "data" / "lci" /
 LCI_agrifootprint_simapro_folderpath: pathlib.Path = here.parent / "data" / "lci" / "AGF_fromSimaPro"
 LCI_wfldb_simapro_folderpath: pathlib.Path = here.parent / "data" / "lci" / "WFLDB_fromSimaPro"
 LCI_salca_simapro_folderpath: pathlib.Path = here.parent / "data" / "lci" / "SALCA_fromSimaPro"
+LCI_fooddk_simapro_folderpath: pathlib.Path = here.parent / "data" / "lci" / "FoodDK_fromSimaPro"
 LCIA_SimaPro_CSV_folderpath: pathlib.Path = here.parent / "data" / "lcia" / "fromSimaPro"
 
 # Generic and Brightway
@@ -59,6 +60,7 @@ change_brightway_project_directory(project_path)
 # If project already exists, raise error
 if project_name in bw2data.projects:
     raise ValueError("Project '{}' already exists and does not need any setup.".format(project_name))
+    # bw2data.projects.delete_project(project_name)
 
 # Set project
 bw2data.projects.set_current(project_name)
@@ -75,6 +77,7 @@ agribalyse_db_name_simapro: str = "Agribalyse v3.2 - SimaPro (background ecoinve
 agrifootprint_db_name_simapro: str = "AgriFootprint v6.3 - SimaPro (background ecoinvent v3.8)"
 wfldb_db_name_simapro: str = "World Food LCA Database v3.5 - SimaPro (background ecoinvent v3.5)"
 salca_db_name_simapro: str = "SALCA Database v3.11 (background ecoinvent v3.11)"
+fooddk_db_name_simapro: str = "LCA Food DK"
 
 #%% Import SimaPro LCIA methods and create SimaPro biosphere database
 methods: list[dict] = import_SimaPro_LCIA_methods(path_to_SimaPro_CSV_LCIA_files = LCIA_SimaPro_CSV_folderpath,
@@ -111,6 +114,65 @@ biosphere_flows_from_SimaPro_json: dict = json.dumps({idx: dict(m) for idx, m in
 with open(output_path / ("biosphere_flows_from_SimaPro.json"), "w") as outfile:
     outfile.write(biosphere_flows_from_SimaPro_json)
 
+
+#%% Import LCA Food DK database from SimaPro
+fooddk_db_simapro: bw2io.importers.base_lci.LCIImporter = import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths = [LCI_fooddk_simapro_folderpath / "FoodDK.CSV"],
+                                                                                         db_name = fooddk_db_name_simapro,
+                                                                                         encoding = "latin-1",
+                                                                                         delimiter = "\t",
+                                                                                         verbose = True)
+
+fooddk_db_simapro.apply_strategy(partial(link.link_biosphere_flows_externally,
+                                         biosphere_db_name = biosphere_db_name_simapro,
+                                         biosphere_db_name_unlinked = unlinked_biosphere_db_name,
+                                         other_biosphere_databases = None,
+                                         linking_order = None,
+                                         relink = False,
+                                         strip = True,
+                                         case_insensitive = True,
+                                         remove_special_characters = False,
+                                         verbose = True), verbose = True)
+
+fooddk_db_simapro.apply_strategy(partial(migrate_from_excel_file,
+                                         excel_migration_filepath = LCI_fooddk_simapro_folderpath / "custom_migration_FoodDK.xlsx",
+                                         migrate_activities = False,
+                                         migrate_exchanges = True),
+                                 verbose = True)
+
+fooddk_db_simapro.apply_strategy(partial(link.link_activities_internally,
+                                         production_exchanges = True,
+                                         substitution_exchanges = True,
+                                         technosphere_exchanges = True,
+                                         relink = False,
+                                         strip = True,
+                                         case_insensitive = True,
+                                         remove_special_characters = False,
+                                         verbose = True), verbose = True)
+
+print("\n------- Statistics")
+fooddk_db_simapro.statistics()
+
+# Make a new biosphere database for the flows which are currently not linked
+# Add unlinked biosphere flows with a custom function
+unlinked_biosphere_flows: dict = utils.add_unlinked_flows_to_biosphere_database(db = fooddk_db_simapro,
+                                                                                biosphere_db_name_unlinked = unlinked_biosphere_db_name,
+                                                                                biosphere_db_name = biosphere_db_name_simapro,
+                                                                                add_to_existing_database = True,
+                                                                                verbose = True)
+print("\n------- Statistics")
+fooddk_db_simapro.statistics()
+
+# Delete lca food dk database if already existing
+if fooddk_db_name_simapro in bw2data.databases:
+    print("\n------- Delete database: " + fooddk_db_name_simapro)
+    del bw2data.databases[fooddk_db_name_simapro]
+
+# Write database
+print("\n------- Write database: " + wfldb_db_name_simapro)
+fooddk_db_simapro.write_database()
+
+# Free up memory
+del fooddk_db_simapro
 
 #%% Import WFLDB LCI database from SimaPro
 wfldb_db_simapro: bw2io.importers.base_lci.LCIImporter = import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths = [LCI_wfldb_simapro_folderpath / "WFLDB.CSV"],
@@ -531,13 +593,48 @@ end_time = datetime.now()
 
 print('Time elapsed' , str(round((end_time - start_time).seconds/60)), 'minutes')
 
-# #%% Example of how to run an LCA calculation
 
-# if bw2data.__version__[0] >= 4:
-#     from calculation_bw25 import LCA_Calculation
-# else:
-#     from calculation_bw2 import LCA_Calculation
-# from exporter import export_SimaPro_CSV
+#%% Extract metadata to excel
+# import pandas as pd
+# data: list[dict] = []
+
+# # Loop through each database in the background
+# for database_name in bw2data.databases:
+#     print(database_name)
+    
+#     # Go on if it contains 'biosphere' in the name, since we are not interested in extracting biosphere flows
+#     if "biosphere" in database_name:
+#         continue
+    
+#     # Extract data and add to list
+#     data += utils.extract_activity_list_with_metadata(database_name)
+    
+# # Convert to dataframe and write
+# data_df: pd.DataFrame = pd.DataFrame(data)
+# data_df.to_excel(output_path / "activity_metadata.xlsx", index = False)
+
+# import pandas as pd
+# from calculation import LCA_Calculation
+# methods = [m for m in bw2data.methods if "SALCA" in m[0]]
+# LCA_results: list[dict] = []
+
+# for database_name in bw2data.databases:
+#     print(database_name)
+    
+#     # Go on if it contains 'biosphere' in the name, since we will not calculate biosphere flows
+#     if "biosphere" in database_name:
+#         continue
+    
+#     activities: list = list(bw2data.Database(database_name))
+#     lca_calculation: LCA_Calculation = LCA_Calculation(activities = activities, methods = methods)
+#     lca_calculation.calculate(calculate_LCIA_scores = True)
+#     LCIA_scores: list[dict] = lca_calculation.get_results(extended = True)["LCIA_scores"]
+#     LCA_results += LCIA_scores
+    
+# LCA_results_df: pd.DataFrame = pd.DataFrame(LCA_results)
+# LCA_results_df.to_excel(output_path / "activity_impacts.xlsx", index = False)
+
+# #%% Example of how to run an LCA calculation
 
 # # Methods to use for the LCA calculation
 # simapro_EF_LCIA_name: str = "Environmental Footprint v3.1"
