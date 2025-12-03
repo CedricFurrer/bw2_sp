@@ -60,7 +60,7 @@ class Correspondence():
 
         # Raise error, if model type is None of the defaults
         if ecoinvent_model_type not in self.allowed_ecoinvent_model_types:
-            raise ValueError("Current model type '{}' is not allowed. Use one of the following: 'cutoff', 'apos' or 'consequential'".format(self.ecoinvent_model_type, self.allowed_ecoinvent_model_types))
+            raise ValueError("Current model type '{}' is not allowed. Use one of the following: {}".format(self.ecoinvent_model_type, self.allowed_ecoinvent_model_types))
         
         
         
@@ -68,7 +68,7 @@ class Correspondence():
                                       filepath_correspondence_excel: pathlib.Path,
                                       FROM_version: tuple[int, int],
                                       TO_version: tuple[int, int],
-                                      ):
+                                      ) -> None:
         
         # Names of sheets in the excel file depending on the ecoinvent model type
         sheet_name_mapping: dict = {self.ecoinvent_model_type_cutoff: ["Cut-off", "Cut-Off", "cut-off", "cutoff"],
@@ -90,6 +90,9 @@ class Correspondence():
         # Make a version string, based on the version tuple from the element
         FROM_version_str: str = self.version_replacer.join([str(m) for m in FROM_version])
         TO_version_str: str = self.version_replacer.join([str(m) for m in TO_version])
+        
+        # Print statement
+        print("Reading", FROM_version, " -> ", TO_version)
         
         # Read the correspondence excel file for the current versions
         excel: dict[pd.DataFrame] = pd.read_excel(filepath_correspondence_excel, sheet_name = None)
@@ -388,11 +391,14 @@ class Correspondence():
         # Query the data we want to map, excluding the entries that have a multiplier of 0
         data: list[dict] = [m for m in all_data if m[self.key_name_FROM_version] == FROM_version and m[self.key_name_multiplier != 0]]    
         
+        # Replace the NaN's with None
         df_all_data: pd.DataFrame = pd.DataFrame(all_data).replace({"": None})
         df_data: pd.DataFrame = pd.DataFrame(data).replace({"": None})
         
+        # Print statement
         print("Interlinking versions:", FROM_version, "->", TO_version)
-
+        
+        # Initialize counter
         counter: int = 1
         counters: list[int] = []
         
@@ -484,7 +490,7 @@ class Correspondence():
         # Similarly as for the multiplier, we'd like to understand what happened in between with all the other fields when interlinking
         # We loop through all the identifier columns and merge the together
         for i in (self.key_name_version,) + self.identifier_2 + self.identifier_1:
-            df_data[i[0].upper() + i[1:].lower()]: pd.Series = df_data.copy().filter(regex = "{}{}{}{}$|{}{}{}".format(self.FROM_definer, self.whitespace_replacer, i, self.whitespace_replacer, min(counters), self.TO_definer, self.whitespace_replacer, i)).astype(str).agg(" -> ".join, axis = 1)
+            df_data[i[0].upper() + i[1:].lower()]: pd.Series = df_data.copy().filter(regex = "{}{}{}{}{}$|{}{}{}".format(self.FROM_definer, self.whitespace_replacer, i, self.whitespace_replacer, min(counters), self.TO_definer, self.whitespace_replacer, i)).astype(str).agg(" -> ".join, axis = 1)
         
         # Now we only keep the columns with the minimum and maximum counter at the end of the column name,
         # ... plus the ones that we introduced beforehand
@@ -501,41 +507,89 @@ class Correspondence():
         interlinktion_failed: pd.Series = (df_data[self.key_name_TO_version].isna()) | (df_data[self.key_name_TO_version] != TO_version) | (df_data[self.key_name_multiplier_uppered] == 0)
         df_where_interlinktion_failed: pd.DataFrame = df_data.copy()[interlinktion_failed]
         df_data: pd.DataFrame = df_data.copy()[~interlinktion_failed]
+        
+        # Write the data which was deleted from one version to another to a separate dataframe
+        # This is by default the ones where all TO columns are empty
+        deleted: pd.Series = df_data.copy().filter(regex = "|".join(self.TO_identifier_2 + self.TO_identifier_1)).isna().all(axis = 1)
+        df_deleted: pd.DataFrame = df_data.copy()[deleted]
+        df_data: pd.DataFrame = df_data.copy()[~deleted]
+        
+        # Write the data which was newly introduced from one to another version to a separate dataframe
+        # This is by default the ones where all FROM columns are empty
+        newly_introduced: pd.Series = df_data.copy().filter(regex = "|".join(self.FROM_identifier_2 + self.FROM_identifier_1)).isna().all(axis = 1)
+        df_newly_introduced: pd.DataFrame = df_data.copy()[newly_introduced]
+        df_data: pd.DataFrame = df_data.copy()[~newly_introduced]
+        
+        # Initialize new attributes if not yet existing
+        if not hasattr(self, "df_interlinked_data"):
+            self.df_interlinked_data: dict = {}
             
-        deleted = curr_df.copy().filter(regex = "|".join(["TO_" + m for m in cols_1_without_version + cols_2_without_version])).isna().all(axis = 1)
-        deleted_df = curr_df.copy()[deleted]
-        curr_df = curr_df.copy()[~deleted]
+        if not hasattr(self, "df_failed_interlinktion"):
+            self.df_failed_interlinktion: dict = {}
         
-        newly_introduced = curr_df.copy().filter(regex = "|".join(["FROM_" + m for m in cols_1_without_version + cols_2_without_version])).isna().all(axis = 1)
-        newly_introduced_df = curr_df.copy()[newly_introduced]
-        curr_df = curr_df.copy()[~newly_introduced]
+        if not hasattr(self, "df_deleted"):
+            self.df_deleted: dict = {}
+            
+        if not hasattr(self, "df_newly_introduced"):
+            self.df_newly_introduced: dict = {}
         
-        final[(FROM_version, TO_version)] = curr_df.copy()
-        final_failed[(FROM_version, TO_version)] = failed_df.copy()
-        final_deleted[(FROM_version, TO_version)] = deleted_df.copy()
-        final_newly_introduced[(FROM_version, TO_version)] = newly_introduced_df.copy()
-        
-        return df_data
+        # Add to self object
+        self.df_interlinked_data[(FROM_version, TO_version)]: pd.DataFrame = df_data.copy()
+        self.df_failed_interlinktion[(FROM_version, TO_version)]: pd.DataFrame = df_where_interlinktion_failed.copy()
+        self.df_deleted[(FROM_version, TO_version)]: pd.DataFrame = df_deleted.copy()
+        self.df_newly_introduced[(FROM_version, TO_version)]: pd.DataFrame = df_newly_introduced.copy()
     
-self.df_interlinktion_raw: dict = {}
-
+    def map_by_names(self,
+                     FROM_version: tuple[int],
+                     TO_version: tuple[int],
+                     activity_name: str,
+                     reference_product_name: str,
+                     unit: str,
+                     location: str) -> dict:
         
+        if not hasattr(self, "mapping_by_names"):
+            self.mapping_by_names: dict = {}
+            
+        if self.mapping_by_names.get((FROM_version, TO_version)) is None:
+            ...
+            if self.df_interlinked_data.get((FROM_version, TO_version)) is None:
+                self.interlink_correspondence_files(FROM_version, TO_version)
+                
+            for idx, line in self.df_interlinked_data[(FROM_version, TO_version)].iterrows():
+                ...
+                
+        
+
+files: list[tuple] = [("Correspondence-File-v3.1-v3.2.xlsx", (3, 1), (3, 2)),
+                      ("Correspondence-File-v3.2-v3.3.xlsx", (3, 2), (3, 3)),
+                      ("Correspondence-File-v3.3-v3.4.xlsx", (3, 3), (3, 4)),
+                      ("Correspondence-File-v3.4-v3.5.xlsx", (3, 4), (3, 5)),
+                      ("Correspondence-File-v3.5-v3.6.xlsx", (3, 5), (3, 6)),
+                      ("Correspondence-File-v3.6-v3.7.xlsx", (3, 6), (3, 7, 1)),
+                      ("Correspondence-File-v3.7.1-v3.8.xlsx", (3, 7, 1), (3, 8)),
+                      ("Correspondence-File-v3.8-v3.9.1.xlsx", (3, 8), (3, 9, 1)),
+                      ("Correspondence-File-v3.8-v3.9.xlsx", (3, 8), (3, 9)),
+                      ("Correspondence-File-v3.9.1-v3.10.xlsx", (3, 9, 1), (3, 10)),
+                      ("Correspondence-File-v3.10.1-v3.11.xlsx", (3, 10, 1), (3, 11)),
+                      ("Correspondence-File-v3.10-v3.10.1.xlsx", (3, 10), (3, 10, 1)),
+                      ("Correspondence-File-v3.11-v3.12.xlsx", (3, 11), (3, 12)),
+                      ]
+
 correspondence: Correspondence = Correspondence(ecoinvent_model_type = "cutoff")
-correspondence.read_correspondence_dataframe(filepath_correspondence_excel = here / "data" / "Correspondence-File-v3.1-v3.2.xlsx",
-                                             FROM_version = (3, 1),
-                                             TO_version = (3, 2)
-                                             )
-correspondence.read_correspondence_dataframe(filepath_correspondence_excel = here / "data" / "Correspondence-File-v3.2-v3.3.xlsx",
-                                             FROM_version = (3, 2),
-                                             TO_version = (3, 3)
-                                             )
+
+for filename, FROM_version, TO_version in files:
+    correspondence.read_correspondence_dataframe(filepath_correspondence_excel = here / "data" / filename,
+                                                 FROM_version = FROM_version,
+                                                 TO_version = TO_version
+                                                 )
+
+correspondence.interlink_correspondence_files((3, 5), (3, 12))
+correspondence.interlink_correspondence_files((3, 8), (3, 12))
+correspondence.interlink_correspondence_files((3, 9), (3, 12))
 
 df_multipliers_not_summing_to_1: pd.DataFrame = pd.DataFrame(correspondence.check_if_multipliers_sum_to_1())
 df_multipliers_not_summing_to_1.to_excel(here / "multipliers_not_summing_to_1_new.xlsx", index = False)
-    
 
-see = correspondence.interlink_correspondence_files(FROM_version = (3, 1),
-                                                    TO_version = (3, 3))
 
 #%% Create correspondence mapping from ecoinvent files
  
@@ -995,6 +1049,6 @@ FROM_version: tuple = (3, 8)
 TO_version: tuple =(3, 10)
 df_to_create_migration_for: pd.DataFrame = final
 for idx, line in final_df.iterrows():
-
+    ...
     
     
