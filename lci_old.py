@@ -662,7 +662,7 @@ def create_structured_migration_dictionary_from_excel(excel_dataframe: pd.DataFr
     fields: list[str] = [m.replace("FROM_", "") for m in FROM_cols]
     
     # Initialize a list for the 'data'
-    data: dict = {} # !!! CHANGED
+    data: list = []
     
     # Loop through each row in the dataframe
     for idx, row in df.iterrows():
@@ -670,20 +670,13 @@ def create_structured_migration_dictionary_from_excel(excel_dataframe: pd.DataFr
         # The first element is the identifier (uses the FROM cols)
         element_1: tuple = tuple([row[m] for m in FROM_cols])
         
-        # Initialize new object in dictionary # !!! CHANGED
-        if element_1 not in data: # !!! CHANGED
-            data[element_1]: list = [] # !!! CHANGED
-        
         # The second element specifies which fields should be mapped to which values (uses TO cols)
-        element_2: dict = {(m.replace("TO_", "")): row[m] for m in TO_cols if row[m] != ""} # !!! CHANGED
+        element_2 = {(m.replace("TO_", "")): row[m] for m in TO_cols if row[m] != ""}
         
-        # Add to list # !!! CHANGED
-        data[element_1] += [element_2] # !!! CHANGED
+        # Append to the data list
+        data += [(element_1, element_2)]
         
-        # # Append to the data list # !!! CHANGED
-        # data += [(element_1, element_2)] # !!! CHANGED
-        
-    return {"fields": fields, "data": data}
+    return {"fields": fields, "data": data} 
     
 
 def create_migration_mapping(json_dict: dict):
@@ -695,27 +688,27 @@ def create_migration_mapping(json_dict: dict):
     if "data" not in json_dict or "fields" not in json_dict:
         raise ValueError("Invalid migration dictionary. 'data' and 'fields' need to be provided.")
     
-    # 'data' needs to be a dict # !!! CHANGED
-    if not isinstance(json_dict["data"], dict): # !!! CHANGED
-        raise ValueError("Invalid migration dictionary. 'data' needs to be a dict.") # !!! CHANGED
+    # 'data' needs to be a list
+    if not isinstance(json_dict["data"], list):
+        raise ValueError("Invalid migration dictionary. 'data' needs to be a list.")
     
-    # More specifically, 'data' needs to be a dictionary with tuples as keys and list of dictionaries as values # !!! CHANGED
-    if not all([True if isinstance(k, list | tuple) and isinstance(v, list) else False for k, v in json_dict["data"].items()]): # !!! CHANGED
-        raise ValueError("Invalid migration dictionary. 'data' needs to be a dictionary with tuples as keys and list of dictionaries as values.") # !!! CHANGED
+    # More specifically, 'data' needs to be a list of lists which contains a list as a first element and a dictionary as a second element
+    if not all([True if isinstance(m[0], list | tuple) and isinstance(m[1], dict) else False for m in json_dict["data"]]):
+        raise ValueError("Invalid migration dictionary. 'data' needs to be a list of list which contains a list as a first element and a dictionary as a second element.")
     
-    # 'fields' needs to be a list or a tuple # !!! CHANGED
+    # 'fields' needs to be a list
     if not isinstance(json_dict["fields"], list | tuple):
-        raise ValueError("Invalid migration dictionary. 'fields' needs to be a list or a tuple.") # !!! CHANGED
+        raise ValueError("Invalid migration dictionary. 'fields' needs to be a list.")
     
     # 'fields' needs to be a list of strings
     if not all([isinstance(m, str) for m in json_dict["fields"]]):
-        raise ValueError("Invalid migration dictionary. 'fields' needs to be a list or tuple of strings.") # !!! CHANGED
+        raise ValueError("Invalid migration dictionary. 'fields' needs to be a list of strings.")
          
     # Initialize mapping dictionary
     mapping: dict = {}
 
     # Construct mapping dictionary. Looping through all elements
-    for FROM_orig, TOs in json_dict["data"].items(): # !!! CHANGED
+    for FROM_orig, TO_orig in json_dict["data"]:
         
         # First, we need to adapt the FROMs and the TOs
         # We use ast literal to evaluate the elements and merge them to the corresponding Python type
@@ -723,7 +716,7 @@ def create_migration_mapping(json_dict: dict):
         
         # Initialize new variables
         FROM_tuple: tuple = ()
-        TO_dicts: dict = {} # !!! CHANGED
+        TO_dict: dict = {}
         
         # Loop through each element from the FROM list
         for x in FROM_orig:
@@ -738,74 +731,35 @@ def create_migration_mapping(json_dict: dict):
             
             # Append to variable
             FROM_tuple += (xx,)
-         
-        # Check if FROM_tuple already exists in the mapping dictionary. This should not be the case. # !!! CHANGED
-        if FROM_tuple in mapping: # !!! CHANGED
-            raise ValueError("FROM_tuple has already been introduced in the mapping and should not be introduced again considering that the migration dictionary is of consistent nature.") # !!! CHANGED
-        
-        # Initialize new list to append to # !!! CHANGED
-        mapping[FROM_tuple]: list = [] # !!! CHANGED
-        
-        # Loop through each TO element to map to # !!! CHANGED
-        for TO_orig in TOs: # !!! CHANGED
+           
+        # Loop through each key/value pair of the TO element
+        for y, z in TO_orig.items():
             
-            # Initialize new dictionary # !!! CHANGED
-            TO_dict: dict = {} # !!! CHANGED
-        
-            # Loop through each key/value pair of the TO element
-            for y, z in TO_orig.items():
-                
-                # Evaluate, if possible. Otherwise, use the value as it is right now
-                try: yy = ast.literal_eval(y)
-                except: yy = y
-                
-                # Evaluate, if possible. Otherwise, use the value as it is right now
-                try: zz = ast.literal_eval(z)
-                except: zz = z
-                
-                # Convert list to tuples
-                if isinstance(yy, list):
-                    yy = tuple(yy)
-                    
-                # Convert list to tuples
-                if isinstance(zz, list):
-                    zz = tuple(zz)
-                
-                # Append to variable
-                TO_dict[yy] = zz
-                
-            # Append dictionary to existing list # !!! CHANGED
-            mapping[FROM_tuple] += [TO_dict] # !!! CHANGED
-        
-        
-        # # Loop through each key/value pair of the TO element
-        # for y, z in TO_orig.items():
+            # Evaluate, if possible. Otherwise, use the value as it is right now
+            try: yy = ast.literal_eval(y)
+            except: yy = y
             
-        #     # Evaluate, if possible. Otherwise, use the value as it is right now
-        #     try: yy = ast.literal_eval(y)
-        #     except: yy = y
+            # Evaluate, if possible. Otherwise, use the value as it is right now
+            try: zz = ast.literal_eval(z)
+            except: zz = z
             
-        #     # Evaluate, if possible. Otherwise, use the value as it is right now
-        #     try: zz = ast.literal_eval(z)
-        #     except: zz = z
-            
-        #     # Convert list to tuples
-        #     if isinstance(yy, list):
-        #         yy = tuple(yy)
+            # Convert list to tuples
+            if isinstance(yy, list):
+                yy = tuple(yy)
                 
-        #     # Convert list to tuples
-        #     if isinstance(zz, list):
-        #         zz = tuple(zz)
+            # Convert list to tuples
+            if isinstance(zz, list):
+                zz = tuple(zz)
             
-        #     # Append to variable
-        #     TO_dict[yy] = zz
+            # Append to variable
+            TO_dict[yy] = zz
         
-        # # Append to mapping variable
-        # mapping[FROM_tuple] = TO_dict
+        # Append to mapping variable
+        mapping[FROM_tuple] = TO_dict
         
     return tuple(json_dict["fields"]), mapping
 
-# !!! TODO
+
 def apply_migration_mapping(db_var,
                             fields: tuple,
                             migration_mapping: dict,
