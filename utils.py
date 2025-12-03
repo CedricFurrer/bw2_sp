@@ -292,3 +292,47 @@ def copy_brightway_database(db_name: str,
     
     return db_as_obj
     
+
+# Extract metadata to excel
+def extract_activity_list_with_metadata(database_name: str) -> list[dict]:
+    
+    # Initialize an empty list to store the metadata to
+    data: list[dict] = []
+    
+    # Return empty list if database is not found in the Brightway background
+    if database_name not in bw2data.databases:
+        return []
+    
+    # Get the data from the background as Brightway object
+    database_object: bw2data.Database = bw2data.Database(database_name)
+        
+    # Loop through each activity in the database
+    for act in database_object:
+        
+        # Extract the metadata
+        act_code: str = act.key[0]
+        act_name: str = act.get("name")
+        act_SimaPro_name: str = act.get("SimaPro_name")
+        act_location: str = act.get("location")
+        act_unit: str = act.get("unit")
+        act_SimaPro_unit: str = act.get("SimaPro_unit")
+        act_SimaPro_classification: tuple = act.get("SimaPro_categories", ())
+        comment: dict = act.get("simapro metadata", {})
+        
+        # Add data as dictionary to the list
+        data += [{"database": database_name,
+                  "activity_code": act_code,
+                  "activity_name": act_name,
+                  "activity_SimaPro_name": act_SimaPro_name,
+                  "activity_location": act_location,
+                  "activity_unit": act_unit,
+                  "activity_SimaPro_unit": act_SimaPro_unit,
+                  "SimaPro_classification": " | ".join(["'" + m + "'" for m in act_SimaPro_classification]),
+                  **{"Field_" + k: str(v) for k, v in comment.items()}
+                  }]
+        
+    # Return
+    return data
+
+
+
