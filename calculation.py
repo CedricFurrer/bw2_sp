@@ -154,6 +154,7 @@ class LCA_Calculation():
         # Keys to extract from the activity dicts
         self.keys_to_extract_from_BW_acts: tuple[str] = ("name",
                                                          "SimaPro_name",
+                                                         "categories",
                                                          "location",
                                                          "unit")
         
