@@ -27,6 +27,7 @@ from lci import (unregionalize_biosphere,
                  import_XML_LCI_inventories,
                  migrate_from_excel_file,
                  migrate_from_json_file,
+                 create_structured_migration_dictionary_from_excel,
                  create_XML_biosphere_from_elmentary_exchanges_file,
                  create_XML_biosphere_from_LCI,
                  select_inventory_using_regex)
@@ -36,6 +37,7 @@ from harmonization import (create_harmonized_biosphere_migration,
                            elementary_flows_that_are_not_used_in_XML_methods)
 
 from correspondence.correspondence import (create_correspondence_mapping)
+from correspondence.correspondence_NEW import Correspondence
 
 from utils import (change_brightway_project_directory,
                    change_database_name)
@@ -1632,5 +1634,46 @@ lca_calculation: LCA_Calculation = LCA_Calculation(activities = [], methods = [w
 water_use_cfs: list[dict] = lca_calculation.get_characterization_factors([water_use_method])
 water_use_cfs_df: pd.DataFrame = pd.DataFrame(water_use_cfs)
 water_use_cfs_df.to_excel(output_path / "water_use_cfs.xlsx")
+
+
+
+#%%
+files: list[tuple] = [# ("Correspondence-File-v3.1-v3.2.xlsx", (3, 1), (3, 2)),
+                      # ("Correspondence-File-v3.2-v3.3.xlsx", (3, 2), (3, 3)),
+                      # ("Correspondence-File-v3.3-v3.4.xlsx", (3, 3), (3, 4)),
+                      # ("Correspondence-File-v3.4-v3.5.xlsx", (3, 4), (3, 5)),
+                      # ("Correspondence-File-v3.5-v3.6.xlsx", (3, 5), (3, 6)),
+                      # ("Correspondence-File-v3.6-v3.7.1.xlsx", (3, 6), (3, 7, 1)),
+                      # ("Correspondence-File-v3.7.1-v3.8.xlsx", (3, 7, 1), (3, 8)),
+                      ("Correspondence-File-v3.8-v3.9.1.xlsx", (3, 8), (3, 9, 1)),
+                      ("Correspondence-File-v3.8-v3.9.xlsx", (3, 8), (3, 9)),
+                      ("Correspondence-File-v3.9.1-v3.10.xlsx", (3, 9, 1), (3, 10)),
+                      # ("Correspondence-File-v3.10.1-v3.11.xlsx", (3, 10, 1), (3, 11)),
+                      # ("Correspondence-File-v3.10-v3.10.1.xlsx", (3, 10), (3, 10, 1)),
+                      # ("Correspondence-File-v3.11-v3.12.xlsx", (3, 11), (3, 12)),
+                      ]
+
+correspondence: Correspondence = Correspondence(ecoinvent_model_type = "cutoff")
+
+for filename, FROM_version, TO_version in files:
+    correspondence.read_correspondence_dataframe(filepath_correspondence_excel = here.parent / "correspondence" / "data" / filename,
+                                                 FROM_version = FROM_version,
+                                                 TO_version = TO_version
+                                                 )
+
+# correspondence_raw_data: dict = correspondence.raw_data
+# correspondence_interlinked_data: dict = correspondence.df_interlinked_data
+correspondence.interlink_correspondence_files((3, 8), (3, 10))
+
+#%%
+
+df_interlinked_v38: pd.DataFrame = correspondence.df_interlinked_data[((3, 8), (3, 10))]
+correspondence_fields_v38, correspondence_mapping_v38 = create_structured_migration_dictionary_from_excel(df_interlinked_v38)
+
+#%%
+agrifootprint_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(agrifootprint_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
+
+
+
 
 
