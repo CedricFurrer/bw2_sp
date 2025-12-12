@@ -699,8 +699,8 @@ def create_migration_mapping(json_dict: dict):
     if not isinstance(json_dict["data"], dict): 
         raise ValueError("Invalid migration dictionary. 'data' needs to be a dict.") 
     
-    # More specifically, 'data' needs to be a dictionary with tuples as keys and list of dictionaries as values
-    if not all([True if isinstance(k, list | tuple) and isinstance(v, list) else False for k, v in json_dict["data"].items()]):
+    # More specifically, 'data' needs to be a dictionary with either tuples, lists or tuple strings as keys and list of dictionaries as values
+    if not all([True if isinstance(k, list | tuple | str) and isinstance(v, list) else False for k, v in json_dict["data"].items()]):
         raise ValueError("Invalid migration dictionary. 'data' needs to be a dictionary with tuples as keys and list of dictionaries as values.")
     
     # 'fields' needs to be a list or a tuple
@@ -725,19 +725,27 @@ def create_migration_mapping(json_dict: dict):
         FROM_tuple: tuple = ()
         TO_dicts: dict = {}
         
-        # Loop through each element from the FROM list
-        for x in FROM_orig:
+        if isinstance(FROM_orig, list | tuple):
             
-            # Evaluate, if possible. Otherwise, use the value as it is right now
-            try: xx = ast.literal_eval(x)
-            except: xx = x
-            
-            # Convert list to tuples
-            if isinstance(xx, list):
-                xx = tuple(xx)
-            
-            # Append to variable
-            FROM_tuple += (xx,)
+            # Loop through each element from the FROM list
+            for x in FROM_orig:
+                
+                # Evaluate, if possible. Otherwise, use the value as it is right now
+                try: xx = ast.literal_eval(x)
+                except: xx = x
+                
+                # Convert list to tuples
+                if isinstance(xx, list):
+                    xx = tuple(xx)
+                
+                # Append to variable
+                FROM_tuple += (xx,)
+         
+        elif isinstance(FROM_orig, str):
+             FROM_tuple: tuple = ast.literal_eval(FROM_orig)
+             
+        else:
+            raise ValueError("Did not catch the key {} with type {} when creating the migration mapping.".format(FROM_orig, type(FROM_orig).__name__))
          
         # Check if FROM_tuple already exists in the mapping dictionary. This should not be the case.
         if FROM_tuple in mapping:
@@ -822,7 +830,7 @@ def apply_migration_mapping(db_var,
                 # If yes (= no key errors), we replace the values of the current exchange with the ones from the migration mapping
 
                 # We first extract the respective information of the fields of the current exchange with which we search in the migration mapping
-                exc_ID = tuple([exc[m] for m in fields])
+                exc_ID = tuple([exc[m] for m in fields if m in exc])
                 
                 # We check if we find a corresponding item in the migration mapping
                 map_tos: (list | None) = migration_mapping.get(exc_ID)
@@ -884,7 +892,7 @@ def apply_migration_mapping(db_var,
             # If yes (= no key errors), we replace the values of the current inventory with the ones from the migration mapping
                 
             # We first extract the respective information of the fields of the current inventory with which we search in the migration mapping
-            ds_ID: tuple = tuple([ds[m] for m in fields])
+            ds_ID: tuple = tuple([ds[m] for m in fields if m in ds])
             
             # We check if we find a corresponding list in the migration mapping
             map_tos: (list | None) = migration_mapping.get(ds_ID)
