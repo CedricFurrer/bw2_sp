@@ -37,6 +37,7 @@ LCI_agrifootprint_simapro_folderpath: pathlib.Path = here.parent / "data" / "lci
 LCI_wfldb_simapro_folderpath: pathlib.Path = here.parent / "data" / "lci" / "WFLDB_fromSimaPro"
 LCI_salca_simapro_folderpath: pathlib.Path = here.parent / "data" / "lci" / "SALCA_fromSimaPro"
 LCI_fooddk_simapro_folderpath: pathlib.Path = here.parent / "data" / "lci" / "FoodDK_fromSimaPro"
+LCI_esu_simapro_folderpath: pathlib.Path = here.parent / "data" / "lci" / "ESU_fromSimaPro"
 LCIA_SimaPro_CSV_folderpath: pathlib.Path = here.parent / "data" / "lcia" / "fromSimaPro"
 
 # Generic and Brightway
@@ -78,6 +79,7 @@ agrifootprint_db_name_simapro: str = "AgriFootprint v6.3 - SimaPro (background e
 wfldb_db_name_simapro: str = "World Food LCA Database v3.5 - SimaPro (background ecoinvent v3.5)"
 salca_db_name_simapro: str = "SALCA Database v3.11 (background ecoinvent v3.11)"
 fooddk_db_name_simapro: str = "LCA Food DK"
+esu_db_name_simapro: str = "ESU Services (background ecoinvent v3.11)"
 
 #%% Import SimaPro LCIA methods and create SimaPro biosphere database
 methods: list[dict] = import_SimaPro_LCIA_methods(path_to_SimaPro_CSV_LCIA_files = LCIA_SimaPro_CSV_folderpath,
@@ -175,6 +177,66 @@ fooddk_db_simapro.write_database()
 del fooddk_db_simapro
 
 
+#%% Import ESU Services database from SimaPro
+esu_db_simapro: bw2io.importers.base_lci.LCIImporter = import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths = [LCI_esu_simapro_folderpath / "ESU.csv"],
+                                                                                      db_name = esu_db_name_simapro,
+                                                                                      encoding = "latin-1",
+                                                                                      delimiter = "\t",
+                                                                                      verbose = True)
+
+esu_db_simapro.apply_strategy(partial(link.link_biosphere_flows_externally,
+                                      biosphere_db_name = biosphere_db_name_simapro,
+                                      biosphere_db_name_unlinked = unlinked_biosphere_db_name,
+                                      other_biosphere_databases = None,
+                                      linking_order = None,
+                                      relink = False,
+                                      strip = True,
+                                      case_insensitive = True,
+                                      remove_special_characters = False,
+                                      verbose = True), verbose = True)
+
+esu_db_simapro.apply_strategy(partial(migrate_from_excel_file,
+                                      excel_migration_filepath = LCI_esu_simapro_folderpath / "custom_migration_ESU.xlsx",
+                                      migrate_activities = False,
+                                      migrate_exchanges = True),
+                              verbose = True)
+
+esu_db_simapro.apply_strategy(partial(link.link_activities_internally,
+                                      production_exchanges = True,
+                                      substitution_exchanges = True,
+                                      technosphere_exchanges = True,
+                                      relink = False,
+                                      strip = True,
+                                      case_insensitive = True,
+                                      remove_special_characters = False,
+                                      verbose = True), verbose = True)
+
+print("\n------- Statistics")
+esu_db_simapro.statistics()
+
+# Make a new biosphere database for the flows which are currently not linked
+# Add unlinked biosphere flows with a custom function
+unlinked_biosphere_flows: dict = utils.add_unlinked_flows_to_biosphere_database(db = esu_db_simapro,
+                                                                                biosphere_db_name_unlinked = unlinked_biosphere_db_name,
+                                                                                biosphere_db_name = biosphere_db_name_simapro,
+                                                                                add_to_existing_database = True,
+                                                                                verbose = True)
+print("\n------- Statistics")
+esu_db_simapro.statistics()
+
+# Delete lca food dk database if already existing
+if esu_db_name_simapro in bw2data.databases:
+    print("\n------- Delete database: " + esu_db_name_simapro)
+    del bw2data.databases[esu_db_name_simapro]
+
+# Write database
+print("\n------- Write database: " + esu_db_name_simapro)
+esu_db_simapro.write_database()
+
+# Free up memory
+del esu_db_simapro
+
+
 #%% Import the original ecoinvent database extract from SimaPro
 original_ecoinvent_db_simapro: bw2io.importers.base_lci.LCIImporter = import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths = [LCI_ecoinvent_simapro_folderpath / "ECO.CSV"],
                                                                                                      db_name = ecoinvent_db_name_simapro,
@@ -240,11 +302,15 @@ WFLDB_patterns: list[str] = ["WFLDB", # because why not finding WFLDB inventorie
 
 #%% Import regionalized ecoinvent LCI database from SimaPro
 ecoinvent_db_simapro: bw2io.importers.base_lci.LCIImporter = bw2io.importers.base_lci.LCIImporter(ecoinvent_db_name_simapro)
+
+
 ecoinvent_db_simapro.data: list[dict] = select_inventory_using_regex(db_var = copy.deepcopy(original_ecoinvent_db_simapro.data),
                                                                      exclude = True,
                                                                      include = False,
                                                                      patterns = SALCA_patterns + WFLDB_patterns,
                                                                      case_sensitive = True)
+
+
 ecoinvent_db_simapro.apply_strategy(partial(change_database_name,
                                             new_db_name = ecoinvent_db_name_simapro,
                                             ))         
@@ -409,10 +475,7 @@ salca_db_simapro.write_database()
 # Free up memory
 del salca_db_simapro
 
-
-#%%
-
-aaa = [m for m in bw2data.Database(wfldb_db_name_simapro) if "Ammonium nitrate" in m["name"]]
+# aaa = [m for m in bw2data.Database(wfldb_db_name_simapro) if "Ammonium nitrate" in m["name"]]
 
 #%% Import Agribalyse LCI database from SimaPro
 agribalyse_db_simapro: bw2io.importers.base_lci.LCIImporter = import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths = [LCI_agribalyse_simapro_folderpath / "AGB.CSV"],
