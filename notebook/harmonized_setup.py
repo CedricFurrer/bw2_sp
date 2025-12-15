@@ -36,6 +36,9 @@ from harmonization import (create_harmonized_biosphere_migration,
                            create_harmonized_activity_migration,
                            elementary_flows_that_are_not_used_in_XML_methods)
 
+from harmonization_class import (ActivityHarmonization,
+                                 ActivityDefinition)
+
 # from correspondence.correspondence import (create_correspondence_mapping)
 from correspondence.correspondence import Correspondence
 
@@ -903,6 +906,24 @@ for filename, FROM_version, TO_version in correspondence_files_and_versions:
 #%% Specify the activities that can be mapped to
 activities_to_migrate_to: list[dict] = [m.as_dict() for m in bw2data.Database(ecoinvent_db_name_xml_migrated)]
 
+# Initialize the activity harmonization class
+ah: ActivityHarmonization = ActivityHarmonization(model = "Cut-off",
+                                                  system = "Unit")
+
+# Add the items to which should be migrated to
+for ds in activities_to_migrate_to:
+    source: ActivityDefinition = ActivityDefinition(activity_code = ds.get("activity_uuid"), # !!! Check
+                                                    reference_product_code = ds.get("reference_product_uuid"), # !!! Check
+                                                    activity_name = ds.get("activity_name"),
+                                                    reference_product_name = ds.get("reference_product_name"),
+                                                    name = ds.get("name"),
+                                                    simapro_name = ds.get("SimaPro_name"),
+                                                    location = ds.get("location"),
+                                                    unit = ds.get("unit")
+                                                    )
+    
+    ah.add_TO(source = source, target = ds, multiplier = 1)
+
 #%% Create default variables to log data
 unsuccessfully_migrated: list[dict] = []
 successfully_migrated: list[dict] = []
@@ -1179,13 +1200,104 @@ if salca_db_name_updated_simapro in bw2data.databases:
 #%% Create the Agrifootprint activity migration --> all ecoinvent v3.8 found in the background from AgriFootprint should be updated to ecoinvent v3.10, if possible
 agrifootprint_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(agrifootprint_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
 
-# Load dataframe with manually checked activity flows
-manually_checked_SBERT_activity_names: pd.DataFrame = pd.read_excel(LCI_ecoinvent_xml_folderpath / filename_SBERT_activity_names_validated)
+# Initialize the activity harmonization class
+agrifootprint_ah: ActivityHarmonization = copy.deepcopy(ah)
 
 # Interlink correspondence files
-correspondence_obj.interlink_correspondence_files((3, 8), (3, 12))
-ecoinvent_correspondence_v38_to_v312: pd.DataFrame = correspondence_obj.df_interlinked_data[((3, 8), (3, 12))]
+correspondence_obj.interlink_correspondence_files((3, 8), (3, 10))
+ecoinvent_correspondence_v38_to_v312: pd.DataFrame = correspondence_obj.df_interlinked_data[((3, 8), (3, 10))]
 ecoinvent_correspondence_v38_to_v312.to_excel(output_path / "interlinked_correspondence_files_38_312.xlsx")
+
+# Add correspondence mappings to activity harmonization class
+for idx, row in ecoinvent_correspondence_v38_to_v312.iterrows():
+    
+    source: ActivityDefinition = ActivityDefinition(activity_code = row.get("FROM_activity_uuid"),
+                                                    reference_product_code = row.get("FROM_reference_product_uuid"),
+                                                    activity_name = row.get("FROM_activity_name"),
+                                                    reference_product_name = row.get("FROM_reference_product_name"),
+                                                    name = None,
+                                                    simapro_name = None,
+                                                    location = row.get("FROM_location"),
+                                                    unit = row.get("FROM_unit")
+                                                    )
+    
+    target: ActivityDefinition = ActivityDefinition(activity_code = row.get("TO_activity_uuid"),
+                                                    reference_product_code = row.get("TO_reference_product_uuid"),
+                                                    activity_name = row.get("TO_activity_name"),
+                                                    reference_product_name = row.get("TO_reference_product_name"),
+                                                    name = None,
+                                                    simapro_name = None,
+                                                    location = row.get("TO_location"),
+                                                    unit = row.get("TO_unit")
+                                                    )
+    
+    agrifootprint_ah.add_to_correspondence_mapping(source = source,
+                                                   target = target,
+                                                   multiplier = row.get("Multiplier")
+                                                   )
+
+# Load dataframe with custom migration
+agrifootprint_custom_migration_df: pd.DataFrame = pd.read_excel(LCI_ecoinvent_xml_folderpath / filename_SBERT_activity_names_validated)
+
+# Add custom mappings to activity harmonization class
+for idx, row in agrifootprint_custom_migration_df.iterrows():
+    
+    source: ActivityDefinition = ActivityDefinition(activity_code = None,
+                                                    reference_product_code = None,
+                                                    activity_name = None,
+                                                    reference_product_name = None,
+                                                    name = row.get("FROM_name"),
+                                                    simapro_name = None,
+                                                    location = row.get("FROM_location"),
+                                                    unit = row.get("FROM_unit")
+                                                    )
+    
+    target: ActivityDefinition = ActivityDefinition(activity_code = None,
+                                                    reference_product_code = None,
+                                                    activity_name = None,
+                                                    reference_product_name = None,
+                                                    name = row.get("TO_name"),
+                                                    simapro_name = None,
+                                                    location = row.get("TO_location"),
+                                                    unit = row.get("TO_unit")
+                                                    )
+    
+    agrifootprint_ah.add_to_custom_mapping(source = source,
+                                           target = target,
+                                           multiplier = row.get("multiplier")
+                                           )
+
+agrifootprint_successful: tuple = ()
+agrifootprint_unsuccessful_queries: tuple = ()
+agrifootprint_unsuccessful: tuple = ()
+
+for _, exc in agrifootprint_exchanges_to_migrate_to_ecoinvent.items():
+    
+    query: ActivityDefinition = ActivityDefinition(activity_code = exc.get("activity_uuid"), # !!! Check
+                                                   reference_product_code = exc.get("reference_product_uuid"), # !!! Check
+                                                   activity_name = exc.get("activity_name"),
+                                                   reference_product_name = exc.get("reference_product_name"),
+                                                   name = exc.get("name"),
+                                                   simapro_name = exc.get("SimaPro_name"),
+                                                   location = exc.get("location"),
+                                                   unit = exc.get("unit")
+                                                   )
+    
+    if agrifootprint_ah.map_directly(query = query) != ():
+        agrifootprint_successful += agrifootprint_ah.map_directly(query = query) + ("Direct mapping",)
+        
+    elif agrifootprint_ah.map_using_custom_mapping(query = query) != ():
+        agrifootprint_successful += agrifootprint_ah.map_using_custom_mapping(query = query) + ("Custom mapping",)
+    
+    elif agrifootprint_ah.map_using_correspondence_mapping(query = query) != ():
+        agrifootprint_successful += agrifootprint_ah.map_using_correspondence_mapping(query = query) + ("Correspondence mapping",)
+        
+    else:
+        agrifootprint_unsuccessful_queries += (query)
+            
+if len(agrifootprint_unsuccessful_queries) > 0:
+    # agrifootprint_successful += agrifootprint_ah.map_using_correspondence_mapping(query = query) + ("Correspondence mapping",)
+
 
 AGF_background_ei_migration: dict = create_harmonized_activity_migration(flows_1 = list(agrifootprint_exchanges_to_migrate_to_ecoinvent.values()),
                                                                          flows_2 = activities_to_migrate_to,

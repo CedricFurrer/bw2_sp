@@ -223,9 +223,9 @@ class ActivityHarmonization:
             return ((query.data, tuple([(dct, mult.multiplier) for dct, mult in final_found])),)
         
     
-    def map_using_custom(self,
-                         query: ActivityDefinition
-                         ) -> tuple[tuple[dict, tuple[dict, float]]]:
+    def map_using_custom_mapping(self,
+                                 query: ActivityDefinition
+                                 ) -> tuple[tuple[dict, tuple[dict, float]]]:
         
         # Currently, we use all rules as a default. Can be changed however.
         custom_rules: tuple[str] = tuple(list(self._rule_fns.keys()))
@@ -251,9 +251,9 @@ class ActivityHarmonization:
         return ((query.data, final),) if len(final) > 0 else ()
         
     
-    def map_using_correspondence(self,
-                                 query: ActivityDefinition,
-                                 ) -> tuple[tuple[dict, tuple[dict, float]]]:
+    def map_using_correspondence_mapping(self,
+                                         query: ActivityDefinition,
+                                         ) -> tuple[tuple[dict, tuple[dict, float]]]:
         
         # Currently, we use all rules as a default. Can be changed however.
         correspondence_rules: tuple[str] = tuple(list(self._rule_fns.keys()))
@@ -279,22 +279,24 @@ class ActivityHarmonization:
         return ((query.data, final),) if len(final) > 0 else ()
             
     
-    def map_using_SBERT(self,
-                        queries: tuple[ActivityDefinition],
-                        path_to_model: (pathlib.Path | None) = DEFAULT_PATH_TO_SBERT_MODEL,
-                        n: int = 3,
-                        cutoff: float = 0.92
-                        ) -> tuple[tuple[dict, tuple[dict, float]]]:
+    def map_using_SBERT_mapping(self,
+                                queries: tuple[ActivityDefinition],
+                                path_to_model: (pathlib.Path | None) = DEFAULT_PATH_TO_SBERT_MODEL,
+                                n: int = 3,
+                                cutoff: float = 0.92
+                                ) -> tuple[tuple[dict, tuple[dict, float]]]:
         
         if self._mapping_type_direct not in self._source_definitions:
             return ()
         
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
         # Load SBERT model
         if path_to_model is not None and path_to_model.exists():
-            model = SentenceTransformer(str(path_to_model))
+            model = SentenceTransformer(str(path_to_model), device = device)
         else:
-            model = SentenceTransformer("all-MiniLM-L6-v2")
-        
+            model = SentenceTransformer("all-MiniLM-L6-v2", device = device)
+                
         if self._encoded_TOs is None:
             self._TOs_prepared: tuple = ()
             self._backward_SBERT: dict = {}
@@ -305,7 +307,7 @@ class ActivityHarmonization:
                 self._TOs_prepared += SBERT_options
                 self._backward_SBERT |= {o: target.ID for o in SBERT_options}
                 
-                self._encoded_TOs = model.encode(self._TOs_prepared)
+                self._encoded_TOs = model.encode(self._TOs_prepared, convert_to_tensor = True)
         
         queries_prepared: tuple[tuple] = tuple([mm for m in queries for mm in get_SBERT_options(m)])
         
