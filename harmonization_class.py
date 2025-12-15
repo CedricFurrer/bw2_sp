@@ -2,6 +2,7 @@ from dataclasses import asdict
 from pydantic import field_validator
 from pydantic.dataclasses import dataclass
 from typing import Optional, Callable
+from functools import partial
 
 @dataclass(frozen = True)
 class ActivityDefinition:
@@ -9,6 +10,7 @@ class ActivityDefinition:
     reference_product_code: Optional[str] = None
     activity_name: Optional[str] = None
     reference_product_name: Optional[str] = None
+    name: Optional[str] = None
     simapro_name: Optional[str] = None
     location: Optional[str] = None
     unit: Optional[str] = None
@@ -17,6 +19,7 @@ class ActivityDefinition:
                      "reference_product_code",
                      "activity_name",
                      "reference_product_name",
+                     "name",
                      "simapro_name",
                      "location",
                      "unit",
@@ -56,18 +59,61 @@ class ActivityMapping:
             raise ValueError("Multiplier {} is either below or above 1".format(summed))
 
 
-def direct_on_actcode_refcode(act: ActivityDefinition) -> tuple:
-    return (act.activity_code, act.reference_product_code)
+def direct_on_actcode_refcode(act: ActivityDefinition) -> list[tuple]:
+    return [(act.activity_code, act.reference_product_code)]
 
+def direct_on_actname_refname_location_unit(act: ActivityDefinition) -> list[tuple]:
+    return [(act.activity_name, act.reference_product_name, act.location, act.unit)]
 
-def direct_on_actname_refname_location_unit(act: ActivityDefinition) -> tuple:
-    return (act.activity_name, act.reference_product_name, act.location, act.unit)
+def direct_on_name_location_unit(act: ActivityDefinition) -> list[tuple]:
+    return [(act.name, act.location, act.unit)]
 
+def direct_on_SimaPro_name_unit(act: ActivityDefinition) -> list[tuple]:
+    return [(act.simapro_name, act.unit)]
+
+def direct_on_combined_refname_actname_location_unit(act: ActivityDefinition):
+    if isinstance(act.reference_product_name, str) and isinstance(act.activity_name, str):
+        return [(act.reference_product_name + " " + act.activity_name, act.location, act.unit)]
+    else:
+        return [(None, act.location, act.unit)]
+    
+def direct_on_combined_actname_refname_location_unit(act: ActivityDefinition):
+    if isinstance(act.reference_product_name, str) and isinstance(act.activity_name, str):
+        return [(act.activity_name + " " + act.reference_product_name, act.location, act.unit)]
+    else:
+        return [(None, act.location, act.unit)]
+
+def direct_on_created_SimaPro_name_unit(act: ActivityDefinition, models: list[str], systems: list[str]) -> list[tuple]:
+    
+    lst: list[tuple] = []
+    
+    for model in models:
+        
+        if not isinstance(model, str):
+            continue
+        
+        for system in systems:
+            
+            if not isinstance(system, str):
+                continue
+            
+            fields: tuple = (act.reference_product_name, act.location, act.activity_name, model, system)
+            
+            if all([isinstance(m, str) for m in fields]):
+                created_SimaPro_name: (str | None) = "{} {{{}}}|{} | {}, {}".format(fields[0], fields[1], fields[2], fields[3], fields[4])
+                lst += [(created_SimaPro_name, act.unit)]
+    
+    return lst
+            
 
 
 class ActivityHarmonization:
     
     def __init__(self):
+        
+        self.models: list[str] = ["Cut-off", "Cut-Off", "cutoff"]
+        self.systems: list[str] = ["U", "Unit", "S", "System"]
+        
         self._source_definitions: dict = {}
         self._target_definitions: dict = {}
         self._mappings_dict: dict = {}
@@ -78,6 +124,11 @@ class ActivityHarmonization:
         self._rule_fns: dict[str, Callable[ActivityDefinition, tuple]] = {
             "direct_on_actname_refname_location_unit": direct_on_actname_refname_location_unit,
             "direct_on_actcode_refcode": direct_on_actcode_refcode,
+            "direct_on_name_location_unit": direct_on_name_location_unit,
+            "direct_on_SimaPro_name_unit": direct_on_SimaPro_name_unit,
+            "direct_on_created_SimaPro_name_unit": partial(direct_on_created_SimaPro_name_unit, models = self.models, systems = self.systems)   ,
+            "direct_on_combined_refname_actname_location_unit": direct_on_combined_refname_actname_location_unit,
+            "direct_on_combined_actname_refname_location_unit": direct_on_combined_actname_refname_location_unit
         }
     
     def add_TO(self,
@@ -107,20 +158,12 @@ class ActivityHarmonization:
                                  query: ActivityDefinition,
                                  ) -> tuple[tuple[ActivityDefinition]]:
         
-        rules: tuple[str] = ("direct_on_actname_refname_location_unit",
-                             "direct_on_actcode_refcode"
-                             )
+        rules: tuple[str] = tuple(list(self._rule_fns.keys()))
         
         founds: tuple[tuple[ActivityDefinition, Multiplier]] = self._map(query = query,
                                                                          mapping_type = self._mapping_type_correspondence,
                                                                          rules = rules
                                                                          )
-        
-        multipliers: list[float] = [m[1].multiplier for m in founds]
-
-        if sum(multipliers) != 1:
-            raise ValueError("Invalid multiplier sum {}. The sum of all multipliers must be exactly 1".format(sum(multipliers)))
-        
         final = []
         for query_final, multiplier_final in founds:
             
@@ -185,10 +228,11 @@ class ActivityHarmonization:
             
             source: ActivityDefinition = self._source_definitions[mapping_type][source_ID]
             targets: tuple[tuple[ActivityDefinition, Multiplier]] = self._target_definitions[mapping_type][source_ID]
-            rule_tuple: tuple = rule_fn(source)
+            rule_tuples: tuple = rule_fn(source)
             
-            if not any([n is None for n in rule_tuple]):
-                self._mappings_dict[mapping_type][rule] |= {rule_tuple: targets}
+            for rule_tuple in rule_tuples:
+                if not any([n is None for n in rule_tuple]):
+                    self._mappings_dict[mapping_type][rule] |= {rule_tuple: targets}
         
         return self._mappings_dict[mapping_type][rule]
     
@@ -196,7 +240,7 @@ class ActivityHarmonization:
     def _map(self,
              query: ActivityDefinition,
              mapping_type: str,
-             rules: tuple[str]
+             rules: tuple[str],
              ) -> tuple[tuple[ActivityDefinition, Multiplier]]:
                 
         for rule in rules:
@@ -204,6 +248,12 @@ class ActivityHarmonization:
             found: tuple[tuple[ActivityDefinition, Multiplier]] = self._get_targets(query = query, rule = rule, mapping = mapping)
             
             if len(found) > 0:
+                
+                multipliers: list[float] = [m[1].multiplier for m in found]
+
+                if multipliers == [] or sum(multipliers) != 1:
+                    continue
+
                 return found
             
         return ()
@@ -211,7 +261,8 @@ class ActivityHarmonization:
 
     def _get_targets(self, query: ActivityDefinition, rule: str, mapping: dict) -> tuple[tuple[ActivityDefinition, Multiplier]]:
         rule_fn = self._rule_fns[rule]
-        return mapping.get(rule_fn(query), ())
+        retrieved: list = [mapping[m] for m in rule_fn(query) if m in mapping]
+        return retrieved[0] if len(retrieved) > 0 else ()
  
 
 if __name__ == "__main__":
