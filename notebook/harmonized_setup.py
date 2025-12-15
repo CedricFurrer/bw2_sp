@@ -36,8 +36,8 @@ from harmonization import (create_harmonized_biosphere_migration,
                            create_harmonized_activity_migration,
                            elementary_flows_that_are_not_used_in_XML_methods)
 
-from correspondence.correspondence import (create_correspondence_mapping)
-from correspondence.correspondence_NEW import Correspondence
+# from correspondence.correspondence import (create_correspondence_mapping)
+from correspondence.correspondence import Correspondence
 
 from utils import (change_brightway_project_directory,
                    change_database_name)
@@ -876,10 +876,32 @@ del ecoinvent_db_xml_migrated
 
 
 #%% Create correspondence mapping
-correspondence_mapping: list[dict] = create_correspondence_mapping(path_to_correspondence_files = folderpath_correspondence_files,
-                                                                   model_type = "cutoff",
-                                                                   map_to_version = (3, 12),
-                                                                   output_path = output_path)
+
+correspondence_files_and_versions: list[tuple] = [("Correspondence-File-v3.1-v3.2.xlsx", (3, 1), (3, 2)),
+                                                  ("Correspondence-File-v3.2-v3.3.xlsx", (3, 2), (3, 3)),
+                                                  ("Correspondence-File-v3.3-v3.4.xlsx", (3, 3), (3, 4)),
+                                                  ("Correspondence-File-v3.4-v3.5.xlsx", (3, 4), (3, 5)),
+                                                  ("Correspondence-File-v3.5-v3.6.xlsx", (3, 5), (3, 6)),
+                                                  ("Correspondence-File-v3.6-v3.7.1.xlsx", (3, 6), (3, 7, 1)),
+                                                  ("Correspondence-File-v3.7.1-v3.8.xlsx", (3, 7, 1), (3, 8)),
+                                                  ("Correspondence-File-v3.8-v3.9.1.xlsx", (3, 8), (3, 9, 1)),
+                                                  ("Correspondence-File-v3.8-v3.9.xlsx", (3, 8), (3, 9)),
+                                                  ("Correspondence-File-v3.9.1-v3.10.xlsx", (3, 9, 1), (3, 10)),
+                                                  ("Correspondence-File-v3.10.1-v3.11.xlsx", (3, 10, 1), (3, 11)),
+                                                  ("Correspondence-File-v3.10-v3.10.1.xlsx", (3, 10), (3, 10, 1)),
+                                                  ("Correspondence-File-v3.11-v3.12.xlsx", (3, 11), (3, 12)),
+                                                  ]
+
+correspondence_obj: Correspondence = Correspondence(ecoinvent_model_type = "cutoff")
+
+for filename, FROM_version, TO_version in correspondence_files_and_versions:
+    correspondence_obj.read_correspondence_dataframe(filepath_correspondence_excel = here.parent / "correspondence" / "data" / filename,
+                                                     FROM_version = FROM_version,
+                                                     TO_version = TO_version
+                                                 )
+
+#%% Specify the activities that can be mapped to
+activities_to_migrate_to: list[dict] = [m.as_dict() for m in bw2data.Database(ecoinvent_db_name_xml_migrated)]
 
 #%% Create default variables to log data
 unsuccessfully_migrated: list[dict] = []
@@ -1160,11 +1182,16 @@ agrifootprint_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit
 # Load dataframe with manually checked activity flows
 manually_checked_SBERT_activity_names: pd.DataFrame = pd.read_excel(LCI_ecoinvent_xml_folderpath / filename_SBERT_activity_names_validated)
 
+# Interlink correspondence files
+correspondence_obj.interlink_correspondence_files((3, 8), (3, 12))
+ecoinvent_correspondence_v38_to_v312: pd.DataFrame = correspondence_obj.df_interlinked_data[((3, 8), (3, 12))]
+ecoinvent_correspondence_v38_to_v312.to_excel(output_path / "interlinked_correspondence_files_38_312.xlsx")
+
 AGF_background_ei_migration: dict = create_harmonized_activity_migration(flows_1 = list(agrifootprint_exchanges_to_migrate_to_ecoinvent.values()),
-                                                                         flows_2 = list(bw2data.Database(ecoinvent_db_name_xml_migrated)),
-                                                                         # manually_checked_SBERTs = manually_checked_SBERT_activity_names,
-                                                                         manually_checked_SBERTs = None,
-                                                                         ecoinvent_correspondence_mapping = correspondence_mapping)
+                                                                         flows_2 = activities_to_migrate_to,
+                                                                         df_custom_mapping = None,
+                                                                         df_ecoinvent_correspondence_mapping = ecoinvent_correspondence_v38_to_v312,
+                                                                         use_SBERT_for_mapping = True)
 
 # SBERT to map for activities
 unsuccessfully_migrated += [{**{"FROM_" + k: v for k, v in m.items()}, **{"Database": agrifootprint_db_name_updated_simapro}} for m, _ in AGF_background_ei_migration["unsuccessfully_migrated_activity_flows"]]
@@ -1646,11 +1673,11 @@ files: list[tuple] = [# ("Correspondence-File-v3.1-v3.2.xlsx", (3, 1), (3, 2)),
                       # ("Correspondence-File-v3.6-v3.7.1.xlsx", (3, 6), (3, 7, 1)),
                       # ("Correspondence-File-v3.7.1-v3.8.xlsx", (3, 7, 1), (3, 8)),
                       ("Correspondence-File-v3.8-v3.9.1.xlsx", (3, 8), (3, 9, 1)),
-                      ("Correspondence-File-v3.8-v3.9.xlsx", (3, 8), (3, 9)),
+                      # ("Correspondence-File-v3.8-v3.9.xlsx", (3, 8), (3, 9)),
                       ("Correspondence-File-v3.9.1-v3.10.xlsx", (3, 9, 1), (3, 10)),
-                      # ("Correspondence-File-v3.10.1-v3.11.xlsx", (3, 10, 1), (3, 11)),
-                      # ("Correspondence-File-v3.10-v3.10.1.xlsx", (3, 10), (3, 10, 1)),
-                      # ("Correspondence-File-v3.11-v3.12.xlsx", (3, 11), (3, 12)),
+                      ("Correspondence-File-v3.10.1-v3.11.xlsx", (3, 10, 1), (3, 11)),
+                      ("Correspondence-File-v3.10-v3.10.1.xlsx", (3, 10), (3, 10, 1)),
+                      ("Correspondence-File-v3.11-v3.12.xlsx", (3, 11), (3, 12)),
                       ]
 
 correspondence: Correspondence = Correspondence(ecoinvent_model_type = "cutoff")
@@ -1663,17 +1690,370 @@ for filename, FROM_version, TO_version in files:
 
 # correspondence_raw_data: dict = correspondence.raw_data
 # correspondence_interlinked_data: dict = correspondence.df_interlinked_data
-correspondence.interlink_correspondence_files((3, 8), (3, 10))
+correspondence.interlink_correspondence_files((3, 8), (3, 12))
 
 #%%
 
-df_interlinked_v38: pd.DataFrame = correspondence.df_interlinked_data[((3, 8), (3, 10))]
+df_interlinked_v38: pd.DataFrame = correspondence.df_interlinked_data[((3, 8), (3, 12))]
 correspondence_fields_v38, correspondence_mapping_v38 = create_structured_migration_dictionary_from_excel(df_interlinked_v38)
 
 #%%
 agrifootprint_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(agrifootprint_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
 
 
+#%%
 
+def create_activity_IDs(activity_code: (str | None),
+                        reference_product_code: (str | None),
+                        SimaPro_name: (str | None),
+                        activity_name: (str | None),
+                        reference_product_name: (str | None),
+                        location: (str | None),
+                        unit: (str | None),
+                        models: list,
+                        systems: list,
+                        ) -> list[tuple[(str | None)]]:
+    
+    
+    if not isinstance(activity_code, str):
+        activity_code = None
+        
+    if not isinstance(reference_product_code, str):
+        reference_product_code = None
+        
+    if not isinstance(SimaPro_name, str):
+        SimaPro_name = None
+        
+    if not isinstance(activity_name, str):
+        activity_name = None
+        
+    if not isinstance(reference_product_name, str):
+        reference_product_name = None
+    
+    if not isinstance(location, str):
+        location = None
+        
+    if not isinstance(unit, str):
+        unit = None
+    
+    # IDs are tuples of format
+    # ("activity_code", "reference_product_code", "SimaPro_name", "activity_name", "reference_product_name", "location", "unit")
+    IDs: list = []
+     
+    if SimaPro_name is not None and unit is not None:
+        IDs += [(None, None, SimaPro_name, None, None, None, unit)]
+    
+    if reference_product_name is not None and activity_name is not None and location is not None and unit is not None and models != [] and systems != []:
+        
+        for model in models:
+            
+            if not isinstance(model, str):
+                continue
+            
+            for system in systems:
+                
+                if not isinstance(system, str):
+                    continue
+            
+                created_SimaPro_name: (str | None) = "{} {{{}}}|{} | {}, {}".format(reference_product_name, location, activity_name, model, system)
+                IDs += [(None, None, created_SimaPro_name, None, None, None, unit)]
+    
+    if activity_name is None and reference_product_name is not None and location is not None and unit is not None:
+        IDs += [(None, None, None, None, reference_product_name, location, unit)]
+    
+    if activity_name is not None and reference_product_name is not None and location is not None and unit is not None:
+        IDs += [(None, None, None, activity_name, reference_product_name, location, unit)]
+        IDs += [(None, None, None, None, reference_product_name + " " + activity_name, location, unit)]
+        IDs += [(None, None, None, None, activity_name + " " + reference_product_name, location, unit)]
+    
+    if activity_code is not None and reference_product_code is not None:
+        IDs += [(activity_code, reference_product_code, None, None, None, None, None)]
+
+    return list(set(IDs))
+
+
+def find_activity(IDs: list[tuple], multiplier: (float | int), mapping: dict) -> list[tuple]:
+    
+    for ID in IDs:
+        found: (list[tuple] | None) = mapping.get(ID)
+        
+        if found is not None:
+            return [(m[0], m[1] * multiplier) for m in found]
+    
+    return []
+
+
+flows_1: list[dict] = copy.deepcopy(list(agrifootprint_exchanges_to_migrate_to_ecoinvent.values()))
+flows_2: list[dict] = activities_to_migrate_to
+df_custom_mapping: (pd.DataFrame | None) = None
+df_ecoinvent_correspondence_mapping: (pd.DataFrame | None) = ecoinvent_correspondence_v38_to_v312
+use_SBERT_for_mapping: bool = True
+
+models: list[str] = ["Cut-off", "Cut-Off", "cutoff"]
+systems: list[str] = ["U", "Unit", "S", "System"]
+
+direct_mapping: dict = {}
+custom_mapping: dict = {}
+correspondence_mapping: dict = {}
+SBERT_mapping: dict = {}
+
+# Loop through each of the activity that can be mapped to
+for act in flows_2:
+    
+    FROM_IDs: list[tuple] = create_activity_IDs(activity_code = act.get("activity_code"),
+                                                reference_product_code = act.get("reference_product_code"),
+                                                SimaPro_name = act.get("SimaPro_name"),
+                                                activity_name = act.get("activity_name"),
+                                                reference_product_name = act.get("reference_product_name"),
+                                                location = act.get("location"),
+                                                unit = act.get("unit"),
+                                                models = models,
+                                                systems = systems)
+    
+    for FROM_ID in FROM_IDs:
+        if direct_mapping.get(FROM_ID) is None:
+            direct_mapping[FROM_ID] = [(copy.deepcopy(act), 1)]
+
+# print(set([len(m) for _, m in direct_mapping.items()]))
+
+if isinstance(df_ecoinvent_correspondence_mapping, pd.DataFrame):
+    
+    direct_mapping_copied = copy.deepcopy(direct_mapping)
+    
+    for idx, row in df_ecoinvent_correspondence_mapping.iterrows():
+        TO_IDs: list[tuple] = create_activity_IDs(activity_code = row["TO_activity_uuid"],
+                                                  reference_product_code = row["TO_reference_product_uuid"],
+                                                  SimaPro_name = None,
+                                                  activity_name = row["TO_activity_name"],
+                                                  reference_product_name = row["TO_reference_product_name"],
+                                                  location = row["TO_location"],
+                                                  unit = row["TO_unit"],
+                                                  models = models,
+                                                  systems = systems)
+        
+        found: list[tuple] = find_activity(IDs = TO_IDs, multiplier = row["Multiplier"], mapping = direct_mapping_copied)
+        
+        if found != []:
+            FROM_IDs: list[tuple] = create_activity_IDs(activity_code = row["FROM_activity_uuid"],
+                                                        reference_product_code = row["FROM_reference_product_uuid"],
+                                                        SimaPro_name = None,
+                                                        activity_name = row["FROM_activity_name"],
+                                                        reference_product_name = row["FROM_reference_product_name"],
+                                                        location = row["FROM_location"],
+                                                        unit = row["FROM_unit"],
+                                                        models = models,
+                                                        systems = systems)
+        
+            for FROM_ID in FROM_IDs:
+                if correspondence_mapping.get(FROM_ID) is None:
+                    correspondence_mapping[FROM_ID]: list[tuple] = copy.deepcopy(found)
+                
+                else:
+                    correspondence_mapping[FROM_ID] += copy.deepcopy(found)
+                    
+    
+    # Check that all multipliers sum up to exactly 1
+    not_summing_to_1: list[tuple] = [str(k) + " --> " + str(sum([m for _, m in v])) for k, v in correspondence_mapping.items() if sum([m for _, m in v]) < 0.99 or sum([m for _, m in v]) > 1.01]
+    
+    if not_summing_to_1 != []:
+        print("\n - ".join(set(not_summing_to_1)))
+        raise ValueError()
+
+print(set([len(m) for _, m in correspondence_mapping.items()]))
+                    
+
+if isinstance(df_custom_mapping, pd.DataFrame):
+    
+    direct_mapping_copied = copy.deepcopy(direct_mapping)
+    
+    for idx, row in df_custom_mapping.iterrows():
+        TO_IDs: list[tuple] = create_activity_IDs(activity_code = row.get("TO_activity_uuid"),
+                                                  reference_product_code = row.get("TO_reference_product_uuid"),
+                                                  SimaPro_name = row.get("TO_SimaPro_name"),
+                                                  activity_name = row.get("TO_activity_name"),
+                                                  reference_product_name = row.get("TO_reference_product_name"),
+                                                  location = row.get("TO_location"),
+                                                  unit = row.get("TO_unit"),
+                                                  models = models,
+                                                  systems = systems)
+        
+        found: (list[tuple] | None) = find_activity(IDs = TO_IDs, multiplier = row.get("multiplier"), mapping = direct_mapping_copied)
+        
+        if found is not None:
+            FROM_IDs: list[tuple] = create_activity_IDs(activity_code = row.get("FROM_activity_uuid"),
+                                                        reference_product_code = row.get("FROM_reference_product_uuid"),
+                                                        SimaPro_name = row.get("FROM_SimaPro_name"),
+                                                        activity_name = row.get("FROM_activity_name"),
+                                                        reference_product_name = row.get("FROM_reference_product_name"),
+                                                        location = row.get("FROM_location"),
+                                                        unit = row.get("FROM_unit"),
+                                                        models = models,
+                                                        systems = systems)
+        
+            for FROM_ID in FROM_IDs:
+                if custom_mapping.get(FROM_ID) is None:
+                    custom_mapping[FROM_ID] = found
+                
+                else:
+                    custom_mapping[FROM_ID] += found
+
+
+if use_SBERT_for_mapping:
+    
+    best_n_SBERT: int = 5
+    SBERT_cutoff_for_inclusion: float = 0.95
+    keys_to_use_for_SBERT_mapping: tuple[str] = ("SimaPro_name", "unit")
+    
+    FROM_SBERTs: tuple = tuple(set([tuple([m.get(n) for n in keys_to_use_for_SBERT_mapping]) for m in flows_1]))
+    TO_SBERTs: tuple = tuple(set([tuple([m.get(n) for n in keys_to_use_for_SBERT_mapping]) for m in flows_2]))
+    
+    SBERTs = [(a, b) for a, b in zip(FROM_SBERTs, TO_SBERTs) if all([m is not None for m in a]) and all([n is not None for n in b])]
+    FROM_SBERTs_cleaned: tuple = tuple([m for m, _ in SBERTs])
+    TO_SBERTs_cleaned: tuple = tuple([m for _, m in SBERTs])
+    
+    # Map using SBERT
+    df_SBERT_mapping: pd.DataFrame = map_using_SBERT(FROM_SBERTs_cleaned, TO_SBERTs_cleaned, best_n_SBERT)    
+    
+    for idx, row in df_SBERT_mapping.iterrows():
+        
+        if row["ranking"] != best_n_SBERT and row["score"] < SBERT_cutoff_for_inclusion:
+            continue
+        
+        TO_IDs: list[tuple] = create_activity_IDs(activity_code = None,
+                                                  reference_product_code = None,
+                                                  SimaPro_name = row["mapped"][0],
+                                                  activity_name = None,
+                                                  reference_product_name = None,
+                                                  location = None,
+                                                  unit = row["mapped"][1],
+                                                  models = models,
+                                                  systems = systems)
+        
+        found: (list[tuple] | None) = find_activity(IDs = TO_IDs, multiplier = 1, mapping = direct_mapping)
+        
+        if found is not None:
+            
+            FROM_IDs: list[tuple] = create_activity_IDs(activity_code = None,
+                                                        reference_product_code = None,
+                                                        SimaPro_name = row["orig"][0],
+                                                        activity_name = None,
+                                                        reference_product_name = None,
+                                                        location = None,
+                                                        unit = row["orig"][1],
+                                                        models = models,
+                                                        systems = systems)
+            
+            for FROM_ID in FROM_IDs:
+                if SBERT_mapping.get(FROM_ID) is None:
+                    SBERT_mapping[FROM_ID] = found
+
+
+# Initialize a list to store migration data --> tuple of FROM and TO dicts
+successful_migration_data: list = []
+unsuccessful_migration_data: list = []
+
+# Loop through each flow
+# Check if it should be mapped
+# Map if possible
+for exc in flows_1:
+        
+    exc_SimaPro_name = exc.get("SimaPro_name")
+    exc_name = exc.get("name")
+    exc_unit = exc.get("unit")
+    exc_location = exc.get("location")
+    exc_activity_name = exc.get("activity_name")
+    exc_activity_code = exc.get("activity_code")
+    exc_reference_product_name = exc.get("reference_product_name")
+    exc_reference_product_code = exc.get("reference_product_code")
+    
+    if (exc_name, exc_location, exc_unit) in successful_migration_data:
+        continue
+    
+    FROM_IDs: list[tuple] = create_activity_IDs(activity_code = exc_activity_code,
+                                                reference_product_code = exc_reference_product_code,
+                                                SimaPro_name = exc_SimaPro_name,
+                                                activity_name = exc_activity_name,
+                                                reference_product_name = exc_reference_product_name,
+                                                location = exc_location,
+                                                unit = exc_unit,
+                                                models = models,
+                                                systems = systems)
+    
+    found_from_direct_mapping = find_activity(IDs = FROM_IDs, multiplier = 1, mapping = direct_mapping)
+    found_from_custom_mapping = find_activity(IDs = FROM_IDs, multiplier = 1, mapping = custom_mapping)
+    found_from_correspondence_mapping = find_activity(IDs = FROM_IDs, multiplier = 1, mapping = correspondence_mapping)
+    found_from_SBERT_mapping = find_activity(IDs = FROM_IDs, multiplier = 1, mapping = SBERT_mapping)
+    
+    if found_from_direct_mapping is not None:
+        successful_migration_data += [(exc, found_from_direct_mapping, "Direct mapping")]
+        
+    elif found_from_custom_mapping is not None:
+        successful_migration_data += [(exc, found_from_custom_mapping, "Custom mapping")]
+
+    elif found_from_correspondence_mapping is not None:
+        successful_migration_data += [(exc, found_from_correspondence_mapping, "Correspondence mapping")]
+        
+    elif found_from_SBERT_mapping is not None:
+        successful_migration_data += [(exc, found_from_SBERT_mapping, "SBERT mapping")]
+    
+    else:
+        unsuccessful_migration_data += [(exc, [], "Remains unmapped")]
+        
+# Specify the field from which we want to map
+FROM_fields: tuple = ("name", "unit", "location")
+    
+# Specify the fields to which should be mapped to
+TO_fields: tuple = ("code",
+                    "name",
+                    "SimaPro_name",
+                    "categories",
+                    # "top_category",
+                    # "sub_category",
+                    "SimaPro_categories",
+                    "unit",
+                    "SimaPro_unit",
+                    "location"
+                    )
+
+# Initialize empty migration dictionary
+successful_migration_dict: dict = {"fields": FROM_fields,
+                                   "data": {}}
+successful_migration_df: list = []
+unsuccessful_migration_df = [{**{"FROM_" + k: v for k, v in m.items()}, "Used_Mapping": used_mapping} for m, _, used_mapping in unsuccessful_migration_data]
+
+for FROM, TOs, used_mapping in successful_migration_data:
+    
+    FROM_tuple: tuple = tuple([FROM[m] for m in FROM_fields]) + ("technosphere",)
+    TO_list_of_dicts: list[dict] = []
+    
+    for TO, multiplier in TOs:
+        TO_dict: dict = {k: v for k, v in TO.items() if k in TO_fields}
+        TO_list_of_dicts += [{**TO_dict, "multiplier": multiplier}]
+    
+    if str(FROM_tuple) not in successful_migration_dict:
+        successful_migration_dict["data"][str(FROM_tuple)]: list = []
+        
+    successful_migration_dict["data"][str(FROM_tuple)] += TO_list_of_dicts
+
+    FROM_dict_for_df: dict = {"FROM_" + m: FROM[m] for m in FROM_fields}
+    TO_dicts_for_df: dict = [{("TO_" + k if k != "multiplier" else k): v for k, v in m.items()} for m in TO_list_of_dicts]
+    successful_migration_df += [{**FROM_dict_for_df, **m} for m in TO_dicts_for_df]
+    
+# Add 'type' key
+successful_migration_dict["fields"] += ("type",)
+
+# Statistic message for console
+statistic_msg: str = """    
+    A total of {} unique activity flows were detected that need to be linked:
+        - {} unique activity flows were successfully linked
+        - {} unique activity flows remain unlinked
+    """.format(len(successful_migration_data) + len(unsuccessful_migration_data), len(successful_migration_data), len(unsuccessful_migration_data))
+print(statistic_msg)
+    
+# Return
+return {"activity_migration": successful_migration_dict,
+        "successfully_migrated_activity_flows": pd.DataFrame(successful_migration_df),
+        "unsuccessfully_migrated_activity_flows": pd.DataFrame(unsuccessful_migration_df)
+        }
 
 

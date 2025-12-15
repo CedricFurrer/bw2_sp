@@ -4,6 +4,7 @@ if __name__ == "__main__":
     import os
     os.chdir(pathlib.Path(__file__).parent)
 
+import copy
 import pandas as pd
 from utils import (map_using_SBERT)
 from helper import (check_function_input_type)
@@ -204,7 +205,7 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
     
     # Initialize empty migration dictionary
     successful_migration_dict: dict = {"fields": ("code",),
-                                       "data": []}
+                                       "data": {}}
     
     # Write all items which have been successfully mapped to the data field in the migration dictionary
     for FROM, TO in successful_migration_data.values():
@@ -229,13 +230,18 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
         multiplier: float = TO.get("multiplier", float(1)) * unit_multiplier
         
         # Field one always specifies to which item the mapping should be applied.
-        one: list[str] = [FROM[n] for n in successful_migration_dict["fields"]]
+        # one: list[str] = [FROM[n] for n in successful_migration_dict["fields"]]
+        one: tuple[str] = tuple([FROM[n] for n in successful_migration_dict["fields"]]) + ("biosphere",)
         
         # Field two always specifies the new data that should be applied to update the original data
         two: dict = dict(**{str(o): str(TO[o]) for o in TO_fields}, **{"multiplier": multiplier})
         
         # Add to migration dictionary
-        successful_migration_dict["data"] += [[one + ["biosphere"], two]]
+        # successful_migration_dict["data"] += [[one + ["biosphere"], two]]
+        if str(one) not in successful_migration_dict:
+            successful_migration_dict["data"][str(one)] = []
+            
+        successful_migration_dict["data"][str(one)] += [two]
     
     # Add 'type' key
     successful_migration_dict["fields"] += ("type",)
@@ -355,7 +361,7 @@ def create_activity_IDs(activity_code: (str | None),
     return list(set(IDs))
 
 
-def find_activity(IDs: list[tuple], multiplier: (float | int), mapping: dict) -> (list[tuple] | None):
+def find_activity(IDs: list[tuple], multiplier: (float | int), mapping: dict) -> (tuple | None):
     
     found: list[tuple] = [mapping[ID] for ID in IDs if mapping.get(ID) is not None]
     
@@ -404,8 +410,10 @@ def create_harmonized_activity_migration(flows_1: list,
     
     if isinstance(df_ecoinvent_correspondence_mapping, pd.DataFrame):
         
+        direct_mapping_copied = copy.deepcopy(direct_mapping)
+        
         for idx, row in df_ecoinvent_correspondence_mapping.iterrows():
-            TO_IDs: list[tuple] = create_activity_IDs(activity_code = row["TO_activity_uuid"],
+            TO_IDs_2: list[tuple] = create_activity_IDs(activity_code = row["TO_activity_uuid"],
                                                       reference_product_code = row["TO_reference_product_uuid"],
                                                       SimaPro_name = None,
                                                       activity_name = row["TO_activity_name"],
@@ -415,10 +423,10 @@ def create_harmonized_activity_migration(flows_1: list,
                                                       models = models,
                                                       systems = systems)
             
-            found: (list[tuple] | None) = find_activity(IDs = TO_IDs, multiplier = row["Multiplier"], mapping = direct_mapping)
+            found_2: (list[tuple] | None) = find_activity(IDs = TO_IDs_2, multiplier = row["Multiplier"], mapping = direct_mapping_copied)
             
-            if found is not None:
-                FROM_IDs: list[tuple] = create_activity_IDs(activity_code = row["FROM_activity_uuid"],
+            if found_2 is not None:
+                FROM_IDs_2: list[tuple] = create_activity_IDs(activity_code = row["FROM_activity_uuid"],
                                                             reference_product_code = row["FROM_reference_product_uuid"],
                                                             SimaPro_name = None,
                                                             activity_name = row["FROM_activity_name"],
@@ -428,15 +436,17 @@ def create_harmonized_activity_migration(flows_1: list,
                                                             models = models,
                                                             systems = systems)
             
-                for FROM_ID in FROM_IDs:
-                    if correspondence_mapping.get(FROM_ID) is None:
-                        correspondence_mapping[FROM_ID] = [found]
+                for FROM_ID_2 in FROM_IDs_2:
+                    if correspondence_mapping.get(FROM_ID_2) is None:
+                        correspondence_mapping[FROM_ID_2] = found_2
                     
                     else:
-                        correspondence_mapping[FROM_ID] += [found]
+                        correspondence_mapping[FROM_ID_2] += found_2
                         
     
     if isinstance(df_custom_mapping, pd.DataFrame):
+        
+        direct_mapping_copied = copy.deepcopy(direct_mapping)
         
         for idx, row in df_custom_mapping.iterrows():
             TO_IDs: list[tuple] = create_activity_IDs(activity_code = row.get("TO_activity_uuid"),
@@ -449,7 +459,7 @@ def create_harmonized_activity_migration(flows_1: list,
                                                       models = models,
                                                       systems = systems)
             
-            found: (list[tuple] | None) = find_activity(IDs = TO_IDs, multiplier = row.get("multiplier"), mapping = direct_mapping)
+            found: (list[tuple] | None) = find_activity(IDs = TO_IDs, multiplier = row.get("multiplier"), mapping = direct_mapping_copied)
             
             if found is not None:
                 FROM_IDs: list[tuple] = create_activity_IDs(activity_code = row.get("FROM_activity_uuid"),
@@ -464,23 +474,25 @@ def create_harmonized_activity_migration(flows_1: list,
             
                 for FROM_ID in FROM_IDs:
                     if custom_mapping.get(FROM_ID) is None:
-                        custom_mapping[FROM_ID] = [found]
+                        custom_mapping[FROM_ID] = found
                     
                     else:
-                        custom_mapping[FROM_ID] += [found]
+                        custom_mapping[FROM_ID] += found
 
     
     if use_SBERT_for_mapping:
         
         best_n_SBERT: int = 5
         SBERT_cutoff_for_inclusion: float = 0.95
-        keys_to_use_for_SBERT_mapping: tuple[str] = ("name", "location", "unit")
+        keys_to_use_for_SBERT_mapping: tuple[str] = ("SimaPro_name", "unit")
         
         FROM_SBERTs: tuple = tuple(set([tuple([m.get(n) for n in keys_to_use_for_SBERT_mapping]) for m in flows_1]))
         TO_SBERTs: tuple = tuple(set([tuple([m.get(n) for n in keys_to_use_for_SBERT_mapping]) for m in flows_2]))
         
-        FROM_SBERTs_cleaned, TO_SBERTs_cleaned = [(a, b) for a, b in zip(FROM_SBERTs, TO_SBERTs) if all([m is not None for m in a]) and all([n is not None for n in b])]
-    
+        SBERTs = [(a, b) for a, b in zip(FROM_SBERTs, TO_SBERTs) if all([m is not None for m in a]) and all([n is not None for n in b])]
+        FROM_SBERTs_cleaned: tuple = tuple([m for m, _ in SBERTs])
+        TO_SBERTs_cleaned: tuple = tuple([m for _, m in SBERTs])
+        
         # Map using SBERT
         df_SBERT_mapping: pd.DataFrame = map_using_SBERT(FROM_SBERTs_cleaned, TO_SBERTs_cleaned, best_n_SBERT)    
         
@@ -491,11 +503,11 @@ def create_harmonized_activity_migration(flows_1: list,
             
             TO_IDs: list[tuple] = create_activity_IDs(activity_code = None,
                                                       reference_product_code = None,
-                                                      SimaPro_name = None,
+                                                      SimaPro_name = row["mapped"][0],
                                                       activity_name = None,
-                                                      reference_product_name = row["mapped"][0],
-                                                      location = row["mapped"][1],
-                                                      unit = row["mapped"][2],
+                                                      reference_product_name = None,
+                                                      location = None,
+                                                      unit = row["mapped"][1],
                                                       models = models,
                                                       systems = systems)
             
@@ -505,17 +517,17 @@ def create_harmonized_activity_migration(flows_1: list,
                 
                 FROM_IDs: list[tuple] = create_activity_IDs(activity_code = None,
                                                             reference_product_code = None,
-                                                            SimaPro_name = None,
+                                                            SimaPro_name = row["orig"][0],
                                                             activity_name = None,
-                                                            reference_product_name = row["orig"][0],
-                                                            location = row["orig"][1],
-                                                            unit = row["orig"][2],
+                                                            reference_product_name = None,
+                                                            location = None,
+                                                            unit = row["orig"][1],
                                                             models = models,
                                                             systems = systems)
                 
                 for FROM_ID in FROM_IDs:
                     if SBERT_mapping.get(FROM_ID) is None:
-                        SBERT_mapping[FROM_ID] = [found]
+                        SBERT_mapping[FROM_ID] = found
     
     
     # Initialize a list to store migration data --> tuple of FROM and TO dicts
@@ -568,7 +580,7 @@ def create_harmonized_activity_migration(flows_1: list,
         
         else:
             unsuccessful_migration_data += [(exc, [], "Remains unmapped")]
-
+            
     # Specify the field from which we want to map
     FROM_fields: tuple = ("name", "unit", "location")
         
@@ -587,24 +599,26 @@ def create_harmonized_activity_migration(flows_1: list,
     
     # Initialize empty migration dictionary
     successful_migration_dict: dict = {"fields": FROM_fields,
-                                        "data": []}
+                                       "data": {}}
     successful_migration_df: list = []
     unsuccessful_migration_df = [{**{"FROM_" + k: v for k, v in m.items()}, "Used_Mapping": used_mapping} for m, _, used_mapping in unsuccessful_migration_data]
     
     for FROM, TOs, used_mapping in successful_migration_data:
         
-        FROM_tuple: tuple = tuple([FROM[m] for m in FROM_fields])
+        FROM_tuple: tuple = tuple([FROM[m] for m in FROM_fields]) + ("technosphere",)
         TO_list_of_dicts: list[dict] = []
         
         for TO, multiplier in TOs:
             TO_dict: dict = {k: v for k, v in TO.items() if k in TO_fields}
             TO_list_of_dicts += [{**TO_dict, "multiplier": multiplier}]
         
-        successful_migration_dict["data"] += [{FROM_tuple + ("technosphere",): TO_list_of_dicts}]
-        # successful_migration_dict["data"] += [{FROM_tuple + ("substitution",): TO_list_of_dicts}]
+        if str(FROM_tuple) not in successful_migration_dict:
+            successful_migration_dict["data"][str(FROM_tuple)]: list = []
+            
+        successful_migration_dict["data"][str(FROM_tuple)] += TO_list_of_dicts
 
         FROM_dict_for_df: dict = {"FROM_" + m: FROM[m] for m in FROM_fields}
-        TO_dicts_for_df: dict = {**{("TO_" + m if m != "multiplier" else m): FROM[m] for m in TO_list_of_dicts}, "Used_Mapping": used_mapping}
+        TO_dicts_for_df: dict = [{("TO_" + k if k != "multiplier" else k): v for k, v in m.items()} for m in TO_list_of_dicts]
         successful_migration_df += [{**FROM_dict_for_df, **m} for m in TO_dicts_for_df]
         
     # Add 'type' key
@@ -687,7 +701,52 @@ def create_harmonized_activity_migration(flows_1: list,
 #             "successfully_migrated_activity_flows": [m for m in list(successful_migration_data.values())],
 #             "unsuccessfully_migrated_activity_flows": [m for m in list(unsuccessful_migration_data.values())],
 #             "SBERT_to_map": SBERT_to_map}
+#%%
+# import datetime
+# import pathlib
+# from sentence_transformers import SentenceTransformer, util
+# import uuid
+# huge_list = [(str(uuid.uuid4()), "b") for m in range(25_000)] 
+
+# # Path to where model might lay
+# path: pathlib.Path = pathlib.Path(__file__).parent / "defaults" / "all-MiniLM-L6-v2"
+
+# # Check if path exists
+# if path.exists():
+#     model = SentenceTransformer(str(path))
+    
+#%%
+# time_1 = datetime.datetime.now()
+# # embeddings1 = model.encode(items_to_map, convert_to_tensor = True)
+# embeddings2 = model.encode(huge_list, convert_to_tensor = True)
+# time_2 = datetime.datetime.now()
+
+# for i in range(25_000):
+#     embeddings1 = model.encode(["aaaa" + str(i)], convert_to_tensor = True)
+#     cosine_scores = util.cos_sim(embeddings1, embeddings2)
+# time_3 = datetime.datetime.now()
+
+# print(time_2 - time_1)
+# print(time_3 - time_2)
+
+#%%
+# # Compute cosine-similarities
+# cosine_scores = util.cos_sim(embeddings1, embeddings2)
+
+# # Initialize variable
+# data: list = []
+
+# # Loop through each item from 'items_to_map' and extract the elements that were mapped to it with its respective cosine score
+# for idx_I, scores_tensor in enumerate(cosine_scores):
+    
+#     # Extract the scores (values) and its respective location (indice)
+#     values, indices = torch.sort(scores_tensor, descending = True)
+    
+#     # Add the n (max_number) mapped items with the highest cosine score to the list
+#     data += [{"orig": items_to_map[idx_I],
+#               "mapped": items_to_map_to[indice],
+#               "score": float(value),
+#               "ranking": idx} for idx, value, indice in zip(reversed(range(1, max_number + 1)), values[0:max_number], indices[0:max_number])]
 
 
-        
 
