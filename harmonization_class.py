@@ -1,8 +1,11 @@
+import torch
+import pathlib
 from dataclasses import asdict
 from pydantic import field_validator
 from pydantic.dataclasses import dataclass
 from typing import Optional, Callable
 from functools import partial
+from sentence_transformers import SentenceTransformer, util
 
 @dataclass(frozen = True)
 class ActivityDefinition:
@@ -25,7 +28,7 @@ class ActivityDefinition:
                      "unit",
                      mode = "before")
     def ensure_string(cls, value) -> (str | None):
-        if not isinstance(value, str):
+        if not isinstance(value, str) or value.strip() == "":
             return None
         return value
     
@@ -44,19 +47,6 @@ class Multiplier:
     @field_validator("_multiplier", mode = "before")
     def is_1_if_None(cls, value: (float | None)) -> float:
         return float(1) if value is None else value
-
-
-
-@dataclass(frozen = True)
-class ActivityMapping:
-    source: ActivityDefinition
-    targets: tuple[tuple[ActivityDefinition, Multiplier]]
-    
-    @field_validator("targets", mode = "before")
-    def ensure_multiplier_sum_to_1(cls, value: list) -> None:
-        summed: float = sum([m[1].multliplier for m in value])
-        if summed != 1:
-            raise ValueError("Multiplier {} is either below or above 1".format(summed))
 
 
 def direct_on_actcode_refcode(act: ActivityDefinition) -> list[tuple]:
@@ -104,21 +94,57 @@ def direct_on_created_SimaPro_name_unit(act: ActivityDefinition, models: list[st
                 lst += [(created_SimaPro_name, act.unit)]
     
     return lst
-            
 
+def get_SBERT_options(act: ActivityDefinition) -> tuple[str]:
+    
+    options: list = []
+    
+    if isinstance(act.simapro_name, str) and isinstance(act.unit):
+        options += [(act.simapro_name, act.unit)]
+        
+    if isinstance(act.reference_product_name, str) and isinstance(act.activity_name, str) and isinstance(act.unit, str) and isinstance(act.location, str):
+        options += [(act.activity_name, act.reference_product_name, act.location, act.unit)]
+        
+    if isinstance(act.name, str) and isinstance(act.unit, str) and isinstance(act.location, str):
+        options += [(act.name, act.location, act.unit)]
+        
+    return tuple([", ".join(m) for m in options])
+        
+        
+        
+DEFAULT_PATH_TO_SBERT_MODEL: pathlib.Path = pathlib.Path(__file__).parent / "defaults" / "all-MiniLM-L6-v2"
 
 class ActivityHarmonization:
     
-    def __init__(self):
+    def __init__(self,
+                 model: str,
+                 system: str):
         
-        self.models: list[str] = ["Cut-off", "Cut-Off", "cutoff"]
-        self.systems: list[str] = ["U", "Unit", "S", "System"]
+        models: dict[str, list[str]] = {"Cut-off": ["Cut-off", "Cut-Off", "cutoff"],
+                                        }
+        
+        systems: dict[str, list[str]] = {"Unit": ["Unit", "U"],
+                                         "System": ["System", "S"],
+                                         }
+        
+        if model not in models:
+            raise ValueError("Specified model {} is not valid. Choose one of the following:\n - {}".format(model, "\n - ".join(list(models.keys()))))
+        
+        if system not in systems:
+            raise ValueError("Specified system {} is not valid. Choose one of the following:\n - {}".format(system, "\n - ".join(list(systems.keys()))))
+        
+        self.models: list[str] = models[model]
+        self.systems: list[str] = systems[system]
         
         self._source_definitions: dict = {}
         self._target_definitions: dict = {}
         self._mappings_dict: dict = {}
         
+        self._mapping_type_direct: str = "direct"
         self._mapping_type_correspondence: str = "correspondence"
+        self._mapping_type_custom: str = "custom"
+        self._mapping_type_sbert: str = "SBERT"
+        self._encoded_TOs = None
         
         # “rules” are key functions
         self._rule_fns: dict[str, Callable[ActivityDefinition, tuple]] = {
@@ -137,11 +163,36 @@ class ActivityHarmonization:
                multiplier: (float | None)
                ) -> None:
         
-        self._add_to_mapping(mapping_type = None,
+        self._add_to_mapping(mapping_type = self._mapping_type_direct,
                              source = source,
                              target = target,
                              multiplier = multiplier)
         
+        self._encoded_TOs = None
+    
+    
+    def add_to_custom_mapping(self,
+                              source: ActivityDefinition,
+                              target: ActivityDefinition,
+                              multiplier: (float | None)
+                              ) -> None:
+        
+        updated_target_dict: dict = {}
+        for attr, value in vars(target).items():
+            if value is None:
+                updated_target_dict[attr]: (str | None) = getattr(source, attr)
+            else:
+                updated_target_dict[attr]: (str | None) = value
+        
+        updated_target: ActivityDefinition = ActivityDefinition(**updated_target_dict)
+        
+        self._add_to_mapping(mapping_type = self._mapping_type_custom,
+                             source = source,
+                             target = updated_target,
+                             multiplier = multiplier
+                             )
+        
+    
     def add_to_correspondence_mapping(self,
                                       source: ActivityDefinition,
                                       target: ActivityDefinition,
@@ -153,34 +204,167 @@ class ActivityHarmonization:
                              target = target,
                              multiplier = multiplier
                              )
+    
+    def map_directly(self,
+                     query: ActivityDefinition
+                     ) -> tuple[tuple[dict, tuple[dict, float]]]:
         
-    def map_using_correspondence(self,
-                                 query: ActivityDefinition,
-                                 ) -> tuple[tuple[ActivityDefinition]]:
+        # Currently, we use all rules as a default. Can be changed however.
+        direct_rules: tuple[str] = tuple(list(self._rule_fns.keys()))
         
-        rules: tuple[str] = tuple(list(self._rule_fns.keys()))
+        final_found: tuple[tuple[dict, Multiplier]] = self._map(query = query,
+                                                                mapping_type = self._mapping_type_direct,
+                                                                rules = direct_rules,
+                                                                multipliers_need_to_sum_to_1 = False)
+        if final_found == ():
+            return ()
+        
+        else:
+            return ((query.data, tuple([(dct, mult.multiplier) for dct, mult in final_found])),)
+        
+    
+    def map_using_custom(self,
+                         query: ActivityDefinition
+                         ) -> tuple[tuple[dict, tuple[dict, float]]]:
+        
+        # Currently, we use all rules as a default. Can be changed however.
+        custom_rules: tuple[str] = tuple(list(self._rule_fns.keys()))
         
         founds: tuple[tuple[ActivityDefinition, Multiplier]] = self._map(query = query,
-                                                                         mapping_type = self._mapping_type_correspondence,
-                                                                         rules = rules
+                                                                         mapping_type = self._mapping_type_custom,
+                                                                         rules = custom_rules,
+                                                                         multipliers_need_to_sum_to_1 = False
                                                                          )
-        final = []
+        final: tuple = ()
         for query_final, multiplier_final in founds:
             
             final_found: tuple[tuple[dict, Multiplier]] = self._map(query = query_final,
-                                                                    mapping_type = None,
-                                                                    rules = rules)
-            
+                                                                    mapping_type = self._mapping_type_direct,
+                                                                    rules = custom_rules,
+                                                                    multipliers_need_to_sum_to_1 = False,
+                                                                    )
             if final_found == ():
                 return ()
             
-            final += [[(dct, mult.multiplier * multiplier_final.multiplier) for dct, mult in final_found]]
+            final += tuple([(dct, mult.multiplier * multiplier_final.multiplier) for dct, mult in final_found])
             
-        return final
+        return ((query.data, final),) if len(final) > 0 else ()
+        
+    
+    def map_using_correspondence(self,
+                                 query: ActivityDefinition,
+                                 ) -> tuple[tuple[dict, tuple[dict, float]]]:
+        
+        # Currently, we use all rules as a default. Can be changed however.
+        correspondence_rules: tuple[str] = tuple(list(self._rule_fns.keys()))
+        
+        founds: tuple[tuple[ActivityDefinition, Multiplier]] = self._map(query = query,
+                                                                         mapping_type = self._mapping_type_correspondence,
+                                                                         rules = correspondence_rules,
+                                                                         multipliers_need_to_sum_to_1 = True
+                                                                         )
+        final: tuple = ()
+        for query_final, multiplier_final in founds:
             
+            final_found: tuple[tuple[dict, Multiplier]] = self._map(query = query_final,
+                                                                    mapping_type = self._mapping_type_direct,
+                                                                    rules = correspondence_rules,
+                                                                    multipliers_need_to_sum_to_1 = False,
+                                                                    )
+            if final_found == ():
+                return ()
             
+            final += tuple([(dct, mult.multiplier * multiplier_final.multiplier) for dct, mult in final_found])
+            
+        return ((query.data, final),) if len(final) > 0 else ()
             
     
+    def map_using_SBERT(self,
+                        queries: tuple[ActivityDefinition],
+                        path_to_model: (pathlib.Path | None) = DEFAULT_PATH_TO_SBERT_MODEL,
+                        n: int = 3,
+                        cutoff: float = 0.92
+                        ) -> tuple[tuple[dict, tuple[dict, float]]]:
+        
+        if self._mapping_type_direct not in self._source_definitions:
+            return ()
+        
+        # Load SBERT model
+        if path_to_model is not None and path_to_model.exists():
+            model = SentenceTransformer(str(path_to_model))
+        else:
+            model = SentenceTransformer("all-MiniLM-L6-v2")
+        
+        if self._encoded_TOs is None:
+            self._TOs_prepared: tuple = ()
+            self._backward_SBERT: dict = {}
+            
+            for target in list(self._source_definitions[self._mapping_type_direct].values()):
+                SBERT_options: tuple[str] = get_SBERT_options(target)
+                
+                self._TOs_prepared += SBERT_options
+                self._backward_SBERT |= {o: target.ID for o in SBERT_options}
+                
+                self._encoded_TOs = model.encode(self._TOs_prepared)
+        
+        queries_prepared: tuple[tuple] = tuple([mm for m in queries for mm in get_SBERT_options(m)])
+        
+        if self._TOs_prepared == ():
+            return ()
+
+        embeddings1 = model.encode(queries_prepared, convert_to_tensor = True)
+        
+        # Compute cosine-similarities
+        cosine_scores = util.cos_sim(embeddings1, self._encoded_TOs)
+    
+        # Loop through each item from 'items_to_map' and extract the elements that were mapped to it with its respective cosine score
+        for idx, scores_tensor in enumerate(cosine_scores):
+            
+            # Extract the scores (values) and its respective location (indice)
+            values, indices = torch.sort(scores_tensor, descending = True)
+            
+            # Add the n (max_number) mapped items with the highest cosine score to the list
+            for ranking, value, indice in zip(reversed(range(1, n + 1)), values[0:n], indices[0:n]):
+                
+                if value < cutoff:
+                    continue
+                
+                source: ActivityDefinition = queries[idx]
+                target: ActivityDefinition = self._source_definitions[self._mapping_type_direct][self._backward_SBERT[self._TOs_prepared[indice]]]
+                
+                self._add_to_mapping(mapping_type = self._mapping_type_sbert,
+                                     source = source,
+                                     target = target,
+                                     multiplier = float(1)
+                                     )
+        
+        final: tuple = ()
+        for query in queries:
+            
+            # Currently, we use all rules as a default. Can be changed however.
+            sbert_rules: tuple[str] = tuple(list(self._rule_fns.keys()))
+            
+            founds: tuple[tuple[ActivityDefinition, Multiplier]] = self._map(query = query,
+                                                                             mapping_type = self._mapping_type_sbert,
+                                                                             rules = sbert_rules,
+                                                                             multipliers_need_to_sum_to_1 = True
+                                                                             )
+            for query_final, multiplier_final in founds:
+                
+                final_found: tuple[tuple[dict, Multiplier]] = self._map(query = query_final,
+                                                                        mapping_type = self._mapping_type_direct,
+                                                                        rules = sbert_rules,
+                                                                        multipliers_need_to_sum_to_1 = False,
+                                                                        )
+                if final_found == ():
+                    return ()
+                
+                final += ((query.data, tuple([(dct, mult.multiplier * multiplier_final.multiplier) for dct, mult in final_found])),)
+        
+            
+        return final
+
+
     def _add_to_mapping(self,
                         mapping_type: str,
                         source: ActivityDefinition,
@@ -195,7 +379,7 @@ class ActivityHarmonization:
         
         if source.ID not in self._source_definitions[mapping_type]:
             self._source_definitions[mapping_type][source.ID]: ActivityDefinition = source
-            self._target_definitions[mapping_type][source.ID]: tuple[tuple[(ActivityDefinition | dict), Multiplier]] = ((target, Multiplier(multiplier = multiplier)), )
+            self._target_definitions[mapping_type][source.ID]: tuple[tuple[(ActivityDefinition | dict), Multiplier]] = ((target, Multiplier(multiplier = multiplier)),)
             
         else:
             self._target_definitions[mapping_type][source.ID] += ((target, Multiplier(multiplier = multiplier)),)
@@ -241,7 +425,8 @@ class ActivityHarmonization:
              query: ActivityDefinition,
              mapping_type: str,
              rules: tuple[str],
-             ) -> tuple[tuple[ActivityDefinition, Multiplier]]:
+             multipliers_need_to_sum_to_1: bool,
+             ) -> tuple[tuple[ActivityDefinition | dict, Multiplier]]:
                 
         for rule in rules:
             mapping: dict = self._get_mapping_dict(mapping_type = mapping_type, rule = rule)
@@ -249,17 +434,18 @@ class ActivityHarmonization:
             
             if len(found) > 0:
                 
-                multipliers: list[float] = [m[1].multiplier for m in found]
-
-                if multipliers == [] or sum(multipliers) != 1:
-                    continue
+                if multipliers_need_to_sum_to_1:
+                    multipliers: list[float] = [m[1].multiplier for m in found]
+                    
+                    if multipliers == [] or sum(multipliers) != 1:
+                        continue
 
                 return found
             
         return ()
         
 
-    def _get_targets(self, query: ActivityDefinition, rule: str, mapping: dict) -> tuple[tuple[ActivityDefinition, Multiplier]]:
+    def _get_targets(self, query: ActivityDefinition, rule: str, mapping: dict) -> tuple[tuple[ActivityDefinition | dict, Multiplier]]:
         rule_fn = self._rule_fns[rule]
         retrieved: list = [mapping[m] for m in rule_fn(query) if m in mapping]
         return retrieved[0] if len(retrieved) > 0 else ()
@@ -267,7 +453,26 @@ class ActivityHarmonization:
 
 if __name__ == "__main__":
     
-    ah: ActivityHarmonization = ActivityHarmonization()
+    ah: ActivityHarmonization = ActivityHarmonization(model = "Cut-off",
+                                                      system = "Unit")
+    
+    custom_FROM_1 = ActivityDefinition(activity_code = None,
+                                       reference_product_code = None,
+                                       activity_name = None,
+                                       name = "Product A",
+                                       unit = "kilogram",
+                                       location = "CH"
+                                       )
+    
+    custom_TO_1 = ActivityDefinition(activity_code = "actcodexxx",
+                                     reference_product_code = "refcode0.25",
+                                     activity_name = None,
+                                     name = "Product B",
+                                     unit = "ton",
+                                     location = None
+                                     )
+    
+    custom_multiplier_1 = 0.001
     
     corr_FROM_1 = ActivityDefinition(activity_code = "actcode1",
                                      reference_product_code = "refcode1",
@@ -295,7 +500,10 @@ if __name__ == "__main__":
     
     
     to_map_FROM_11 = ActivityDefinition(activity_code = "actcodexxx",
-                                        reference_product_code = "refcode0.25")
+                                        reference_product_code = "refcode0.25",
+                                        name = "Product A",
+                                        unit = "kilogram",
+                                        location = "CH")
     
     to_map_FROM_12 = ActivityDefinition(activity_code = "actcode0.75",
                                         reference_product_code = "refcode0.75",
@@ -306,19 +514,47 @@ if __name__ == "__main__":
     to_map_TO_12_1 = {"and finally": 1}
     
     
-    query_1 = ActivityDefinition(activity_code = "actcode1",
+    query_1 = ActivityDefinition(activity_code = "actcode0.75",
+                                 reference_product_code = "refcode0.75",
+                                 activity_name = "actname11",
+                                 reference_product_name = "refname1",
+                                 unit = "kilogram",
+                                 location = "CH")
+    
+    query_2 = ActivityDefinition(activity_code = "actcode1",
                                  reference_product_code = "refcode1",
                                  activity_name = "actname11",
                                  reference_product_name = "refname1",
                                  unit = "kilogram",
                                  location = "CH")
     
+    query_3 = ActivityDefinition(activity_code = "actcode1",
+                                 reference_product_code = "refcode1",
+                                 activity_name = "actname11",
+                                 name = "Product A",
+                                 unit = "kilogram",
+                                 location = "CH")
+    
+    query_4 = ActivityDefinition(activity_code = "actcode1",
+                                 reference_product_code = "refcode1",
+                                 activity_name = "actname11",
+                                 name = "Product AA",
+                                 unit = "kilogram",
+                                 location = "CH")
+    
+    query_not_working = ActivityDefinition(activity_code = "xxxxx",
+                                     reference_product_code = "xxxxxx",
+                                     activity_name = "xxxx1",
+                                     name = "Pxxxxx",
+                                     unit = "xxxxxm",
+                                     location = "xxxxxx")
+    
+    ah.add_to_custom_mapping(source = custom_FROM_1, target = custom_TO_1, multiplier = custom_multiplier_1)
     ah.add_to_correspondence_mapping(source = corr_FROM_1, target = corr_TO_11, multiplier = corr_multiplier_11)
     ah.add_to_correspondence_mapping(source = corr_FROM_1, target = corr_TO_12, multiplier = corr_multiplier_12)
     ah.add_TO(source = to_map_FROM_11, target = to_map_TO_11_1, multiplier = 0.48)
     ah.add_TO(source = to_map_FROM_11, target = to_map_TO_11_2, multiplier = 0.52)
     ah.add_TO(source = to_map_FROM_12, target = to_map_TO_12_1, multiplier = 1)
-
 
     # ah._get_mapping_dict(mapping_type = "correspondence", rule = "direct_on_actname_refname_location_unit")
     # aaa = ah._mappings_dict
@@ -326,6 +562,16 @@ if __name__ == "__main__":
     #     for ID, tpl in mapping.items():
     #         for actdef, mult in tpl:
     #             print(mult.multiplier)
-        
-    result_1: list[tuple[dict, Multiplier]] = ah.map_using_correspondence(query = query_1)
-    print(ah._mappings_dict[None])
+    
+    result_1: tuple[tuple[dict, float]] = ah.map_directly(query = query_1)
+    result_2: tuple[tuple[dict, float]] = ah.map_using_correspondence(query = query_2)
+    result_3: tuple[tuple[dict, float]] = ah.map_using_custom(query = query_3)
+    result_4: tuple[tuple[dict, float]] = ah.map_using_SBERT(queries = [query_4])
+    
+    result_11: tuple[tuple[dict, float]] = ah.map_directly(query = query_not_working)
+    result_22: tuple[tuple[dict, float]] = ah.map_using_correspondence(query = query_not_working)
+    result_33: tuple[tuple[dict, float]] = ah.map_using_custom(query = query_not_working)
+    result_44: tuple[tuple[dict, float]] = ah.map_using_SBERT(queries = [query_not_working])
+    
+    
+    
