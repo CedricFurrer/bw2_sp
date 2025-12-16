@@ -90,7 +90,7 @@ def direct_on_created_SimaPro_name_unit(act: ActivityDefinition, models: list[st
             fields: tuple = (act.reference_product_name, act.location, act.activity_name, model, system)
             
             if all([isinstance(m, str) for m in fields]):
-                created_SimaPro_name: (str | None) = "{} {{{}}}|{} | {}, {}".format(fields[0], fields[1], fields[2], fields[3], fields[4])
+                created_SimaPro_name: (str | None) = "{} {{{}}}| {} | {}, {}".format(fields[0], fields[1], fields[2], fields[3], fields[4])
                 lst += [(created_SimaPro_name, act.unit)]
     
     return lst
@@ -99,7 +99,7 @@ def get_SBERT_options(act: ActivityDefinition) -> tuple[str]:
     
     options: list = []
     
-    if isinstance(act.simapro_name, str) and isinstance(act.unit):
+    if isinstance(act.simapro_name, str) and isinstance(act.unit, str):
         options += [(act.simapro_name, act.unit)]
         
     if isinstance(act.reference_product_name, str) and isinstance(act.activity_name, str) and isinstance(act.unit, str) and isinstance(act.location, str):
@@ -156,6 +156,30 @@ class ActivityHarmonization:
             "direct_on_combined_refname_actname_location_unit": direct_on_combined_refname_actname_location_unit,
             "direct_on_combined_actname_refname_location_unit": direct_on_combined_actname_refname_location_unit
         }
+    
+    @property
+    def direct_mapping(self) -> dict:
+        none_query: ActivityDefinition = ActivityDefinition()
+        self.map_directly(query = none_query)
+        return self._mappings_dict[self._mapping_type_direct]
+    
+    @property
+    def custom_mapping(self) -> dict:
+        none_query: ActivityDefinition = ActivityDefinition()
+        self.map_using_custom_mapping(query = none_query)
+        return self._mappings_dict[self._mapping_type_custom]
+    
+    @property
+    def correspondence_mapping(self) -> dict:
+        none_query: ActivityDefinition = ActivityDefinition()
+        self.map_using_correspondence_mapping(query = none_query)
+        return self._mappings_dict[self._mapping_type_correspondence]
+    
+    @property
+    def SBERT_mapping(self) -> dict:
+        none_query: ActivityDefinition = ActivityDefinition()
+        self.map_using_SBERT_mapping(queries = [none_query])
+        return self._mappings_dict[self._mapping_type_sbert]
     
     def add_TO(self,
                source: ActivityDefinition,
@@ -418,7 +442,7 @@ class ActivityHarmonization:
             
             for rule_tuple in rule_tuples:
                 if not any([n is None for n in rule_tuple]):
-                    self._mappings_dict[mapping_type][rule] |= {rule_tuple: targets}
+                    self._mappings_dict[mapping_type][rule][rule_tuple] = targets
         
         return self._mappings_dict[mapping_type][rule]
     
