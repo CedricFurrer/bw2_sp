@@ -69,6 +69,7 @@ notebook/notebook_data/*
 notebook/Brightway2.5_projects
 notebook/Brightway2_projects
 defaults/all-MiniLM-L6-v2
+*/archive/*
 archive/*
 
 # Keep .gitkeep #
