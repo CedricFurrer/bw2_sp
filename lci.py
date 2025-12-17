@@ -541,26 +541,10 @@ def remove_exchanges_with_zero_amount(db_var):
     # Loop through each inventory
     for ds in db_var:
         
-        # Initialize an empty list to store all exchanges that have an amount other than 0
-        exchanges: list = []
+        # Loop through the whole list of exchanges and keep only the ones that are of type production or where amount is greater than 0
+        ds["exchanges"]: list[dict] = [exc for exc in ds["exchanges"]
+                                       if exc["type"] == "production" or exc["amount"] != 0]
         
-        # Loop through all exchanges
-        for exc in ds["exchanges"]:
-            
-            # Check if the amount of the current exchange is 0
-            # If yes, do not add it (= erase it)
-            if exc["amount"] == 0:
-                
-                # However, we do not add it only if it is not of type production
-                if exc["type"] != "production":
-                    continue
-            
-            # Otherwise, if amount is other than 0, add
-            exchanges += [exc]
-        
-        # Overwrite the old exchanges with the list of new exchanges
-        ds["exchanges"]: list = copy.deepcopy(exchanges)
-
     return db_var
 
 
@@ -638,6 +622,26 @@ def unregionalize_biosphere(db_var):
                 
     return db_var
             
+# # !!! ERASE
+# fields: tuple = ("name", "unit", "location")
+# FROM_tuple: tuple = ("Banana", "kilogram", "USA")
+# TO_dict_1: dict = {"name": "Banana 1", "location": "CH"}
+# multiplier_1 = 0.22
+# TO_dict_2: dict = {"name": "Banana 2", "location": "RER"}
+# multiplier_2 = 0.78
+
+# migration_dict_structure: dict = {
+#     "fields": fields,
+#     "data": [
+#         (FROM_tuple,
+#          [
+#              (TO_dict_1, multiplier_1),
+#              (TO_dict_2, multiplier_2)
+#          ]
+#         )
+#         ]
+#     }
+# # !!! ERASE
 
 def create_structured_migration_dictionary_from_excel(excel_dataframe: pd.DataFrame) -> dict[str, list[tuple] | dict[tuple, list[dict]]]:
     
@@ -645,45 +649,45 @@ def create_structured_migration_dictionary_from_excel(excel_dataframe: pd.DataFr
     hp.check_function_input_type(create_structured_migration_dictionary_from_excel, locals())
     
     # Fill NaN values with empty string
-    df: pd.DataFrame = excel_dataframe.fillna("")
+    df: pd.DataFrame = excel_dataframe.replace({float("NaN"): None})
     
     # Extract columns
-    cols: list[str] = list(df.columns)
+    cols: list[str] = [str(m) for m in list(df.columns)]
     
     # Separate FROM and TO columns
     FROM_cols: list[str] = [m for m in cols if "FROM_" in m]
-    TO_cols: list[str] = [m for m in cols if "TO_" in m or m == "multiplier"]
+    TO_cols: list[str] = [m for m in cols if "TO_" in m]
+    multiplier_cols: list[str] = [m for m in cols if "multiplier" in m.strip().lower()]
+    multiplier_col: (str | None) = multiplier_cols[0] if len(multiplier_cols) > 0 else None
     
     # We need information for all FROM cols. Otherwise, the excel is invalid
-    if any([[n for n in list(df[m]) if n == ""] != [] for m in FROM_cols]):
+    if any([[n for n in list(df[m]) if n is None] != [] for m in FROM_cols]):
         raise ValueError("Invalid migration Excel. Some of the FROM columns contain empty values.")
     
     # Create fields --> all names from the FROM columns
     fields: list[str] = [m.replace("FROM_", "") for m in FROM_cols]
     
     # Initialize a list for the 'data'
-    data: dict = {}
+    _data: dict = {}
     
     # Loop through each row in the dataframe
     for idx, row in df.iterrows():
         
-        # The first element is the identifier (uses the FROM cols)
-        element_1: tuple = tuple([row[m] for m in FROM_cols])
+        # Extract the FROM and the multiplier of the current line
+        FROM: tuple = tuple([row[m] for m in FROM_cols])
+        multiplier: float = row[multiplier_col] if multiplier_col is not None and row.get(multiplier_col) is not None else float(1)
         
-        # Initialize new object in dictionary
-        if element_1 not in data:
-            data[element_1]: list = []
+        # Initialize new object in dictionary for the FROM, if not yet existing
+        if FROM not in _data:
+            _data[FROM]: list = []
         
-        # The second element specifies which fields should be mapped to which values (uses TO cols)
-        element_2: dict = {(m.replace("TO_", "")): row[m] for m in TO_cols if row[m] != ""}
-        
-        # Add to list
-        data[element_1] += [element_2]
-        
-        # # Append to the data list
-        # data += [(element_1, element_2)]
-        
-    return {"fields": fields, "data": data}
+        # Extract the TO as a dictionary
+        TO: dict = {(m.replace("TO_", "")): row[m] for m in TO_cols if row[m] is not None}
+
+        # Add the tuple to the list
+        _data[FROM] += [(TO, multiplier)]
+
+    return {"fields": fields, "data": [(FROM, TOs) for FROM, TOs in _data.items()]}
     
 
 def create_migration_mapping(json_dict: dict):
@@ -696,12 +700,12 @@ def create_migration_mapping(json_dict: dict):
         raise ValueError("Invalid migration dictionary. 'data' and 'fields' need to be provided.")
     
     # 'data' needs to be a dict
-    if not isinstance(json_dict["data"], dict): 
-        raise ValueError("Invalid migration dictionary. 'data' needs to be a dict.") 
+    if not isinstance(json_dict["data"], list): 
+        raise ValueError("Invalid migration dictionary. 'data' needs to be a list containing tuples.") 
     
-    # More specifically, 'data' needs to be a dictionary with either tuples, lists or tuple strings as keys and list of dictionaries as values
-    if not all([True if isinstance(k, list | tuple | str) and isinstance(v, list) else False for k, v in json_dict["data"].items()]):
-        raise ValueError("Invalid migration dictionary. 'data' needs to be a dictionary with tuples as keys and list of dictionaries as values.")
+    # More specifically, 'data' needs to be a list with tuples or list of length 2. The first one is the FROM, the second one TO
+    if not all([True if isinstance(m, list | tuple) and isinstance(n, list | tuple) else False for m, n in json_dict["data"]]):
+        raise ValueError("Invalid migration dictionary. 'data' needs to be a list or a tuple consisting of elements that are again lists or tuples of length 2.")
     
     # 'fields' needs to be a list or a tuple
     if not isinstance(json_dict["fields"], list | tuple):
@@ -715,7 +719,7 @@ def create_migration_mapping(json_dict: dict):
     mapping: dict = {}
 
     # Construct mapping dictionary. Looping through all elements
-    for FROM_orig, TOs in json_dict["data"].items():
+    for FROM_orig, TOs in json_dict["data"]:
         
         # First, we need to adapt the FROMs and the TOs
         # We use ast literal to evaluate the elements and merge them to the corresponding Python type
@@ -755,7 +759,7 @@ def create_migration_mapping(json_dict: dict):
         mapping[FROM_tuple]: list = []
         
         # Loop through each TO element to map to
-        for TO_orig in TOs:
+        for TO_orig, multiplier in TOs:
             
             # Initialize new dictionary
             TO_dict: dict = {}
@@ -783,7 +787,7 @@ def create_migration_mapping(json_dict: dict):
                 TO_dict[yy] = zz
                 
             # Append dictionary to existing list
-            mapping[FROM_tuple] += [TO_dict]
+            mapping[FROM_tuple] += [(TO_dict, multiplier)]
         
     return tuple(json_dict["fields"]), mapping
 
@@ -827,13 +831,13 @@ def apply_migration_mapping(db_var,
             if migrate_exchanges:
             
                 # We try to find a suitable entry of the migration mapping for the current exchange
-                # If yes (= no key errors), we replace the values of the current exchange with the ones from the migration mapping
+                # If possible, we replace the values of the current exchange with the ones from the migration mapping
 
                 # We first extract the respective information of the fields of the current exchange with which we search in the migration mapping
-                exc_ID = tuple([exc[m] for m in fields if m in exc])
+                exc_ID: tuple = tuple([exc[m] for m in fields if m in exc])
                 
                 # We check if we find a corresponding item in the migration mapping
-                map_tos: (list | None) = migration_mapping.get(exc_ID)
+                map_tos: (tuple[dict, float] | None) = migration_mapping.get(exc_ID)
                     
                 # Go on only if a mappable has been found
                 if map_tos is not None:
@@ -844,29 +848,24 @@ def apply_migration_mapping(db_var,
                         # Deepcopy the existing exchange
                         exc_copied: dict = copy.deepcopy(exc)    
                     
-                        # If yes, we loop through each key/value pair
-                        for exc_k_new, exc_v_new in map_to.items():
+                        # We loop through each key/value pair
+                        for exc_k_new, exc_v_new in map_to[0].items():
                             
-                            # If we find the 'multiplier', it is a bit special
-                            # It is not a simple replacement, but we rather apply the multiplier to any 'amount' field
-                            if exc_k_new == "multiplier":
+                            # We replace (or add if not existing) the values of the keys in the exchange
+                            exc_copied[exc_k_new] = exc_v_new
+                        
+                        # We loop through all the amount fields (specified above) individually and add the multiplier
+                        for amount_field_exc in amount_fields_exc:
+                            
+                            # If it exists in the current dictionary, we update the field
+                            # We multiply the current value with the multiplier value
+                            if amount_field_exc in exc_copied:
+                                exc_copied[amount_field_exc] *= map_to[1]
                                 
-                                # We loop through all the amount fields (specified above) individually
-                                for amount_field_exc in amount_fields_exc:
-                                    
-                                    # If it exists in the current dictionary, we update the field
-                                    # We multiply the current value with the multiplier value
-                                    if amount_field_exc in exc_copied:
-                                        exc_copied[amount_field_exc] *= exc_v_new
-                                        
-                                # We need to update the negative key
-                                if "negative" in exc_copied:
-                                    exc_copied["negative"] = exc_copied["amount"] < 0
-                                        
-                            else:    
-                                # We replace (or add if not existing) the values of the keys in the exchange
-                                exc_copied[exc_k_new] = exc_v_new
-                                
+                        # We need to update the negative key
+                        if "negative" in exc_copied:
+                            exc_copied["negative"] = exc_copied["amount"] < 0
+                        
                         # Add new exchange to list
                         new_exchanges += [exc_copied]
                         
@@ -889,13 +888,13 @@ def apply_migration_mapping(db_var,
         if migrate_activities:
         
             # We try to find a suitable entry of the migration mapping for the current inventory
-            # If yes (= no key errors), we replace the values of the current inventory with the ones from the migration mapping
+            # If possible, we replace the values of the current inventory with the ones from the migration mapping
                 
             # We first extract the respective information of the fields of the current inventory with which we search in the migration mapping
             ds_ID: tuple = tuple([ds[m] for m in fields if m in ds])
             
             # We check if we find a corresponding list in the migration mapping
-            map_tos: (list | None) = migration_mapping.get(ds_ID)
+            map_tos: (tuple[dict, float] | None) = migration_mapping.get(ds_ID)
             
             # We can only go on, if a mapping has been found
             if map_tos is not None:
@@ -904,26 +903,21 @@ def apply_migration_mapping(db_var,
                 for map_to in map_tos:
                     
                     # Deepcopy the existing activity
-                    ds_copied: dict = copy.deepcopy(exc) 
+                    ds_copied: dict = copy.deepcopy(ds) 
                 
                     # We loop through each key/value pair
-                    for ds_k_new, ds_v_new in map_to.items():
-                            
-                        # If we find the 'multiplier', it is a bit special
-                        # It is not a simple replacement, but we rather apply the multiplier to any 'amount' field
-                        if ds_k_new == "multiplier":
-                            
-                            # We loop through all the amount fields (specified above) individually
-                            for amount_field_ds in amount_fields_ds:
-                                
-                                # If it exists in the current dictionary, we update the field
-                                # We multiply the current value with the multiplier value
-                                if amount_field_ds in ds_copied:
-                                    ds_copied[amount_field_ds] *= ds_v_new
+                    for ds_k_new, ds_v_new in map_to[0].items():
                         
-                        else:
-                            # We replace (or add if not existing) the values of the keys in the inventory
-                            ds_copied[ds_k_new] = ds_v_new
+                        # We replace (or add if not existing) the values of the keys in the exchange
+                        ds_copied[ds_k_new] = ds_v_new
+                        
+                    # We loop through all the amount fields (specified above) individually and add the multiplier
+                    for amount_field_ds in amount_fields_ds:
+                        
+                        # If it exists in the current dictionary, we update the field
+                        # We multiply the current value with the multiplier value
+                        if amount_field_ds in ds_copied:
+                            ds_copied[amount_field_ds] *= map_to[1]
                     
                     # Add the copied activity with the modifications together with the new list of exchanges to the new database list
                     new_db_var += [{**ds_copied,
