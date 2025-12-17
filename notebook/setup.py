@@ -156,11 +156,10 @@ fooddk_db_simapro.statistics()
 
 # Make a new biosphere database for the flows which are currently not linked
 # Add unlinked biosphere flows with a custom function
-unlinked_biosphere_flows: dict = utils.add_unlinked_flows_to_biosphere_database(db = fooddk_db_simapro,
-                                                                                biosphere_db_name_unlinked = unlinked_biosphere_db_name,
-                                                                                biosphere_db_name = biosphere_db_name_simapro,
-                                                                                add_to_existing_database = True,
-                                                                                verbose = True)
+utils.add_unlinked_flows_to_biosphere_database(db = fooddk_db_simapro,
+                                               biosphere_db_name_unlinked = unlinked_biosphere_db_name,
+                                               biosphere_db_name = biosphere_db_name_simapro,
+                                               verbose = True)
 print("\n------- Statistics")
 fooddk_db_simapro.statistics()
 
@@ -216,11 +215,10 @@ esu_db_simapro.statistics()
 
 # Make a new biosphere database for the flows which are currently not linked
 # Add unlinked biosphere flows with a custom function
-unlinked_biosphere_flows: dict = utils.add_unlinked_flows_to_biosphere_database(db = esu_db_simapro,
-                                                                                biosphere_db_name_unlinked = unlinked_biosphere_db_name,
-                                                                                biosphere_db_name = biosphere_db_name_simapro,
-                                                                                add_to_existing_database = True,
-                                                                                verbose = True)
+utils.add_unlinked_flows_to_biosphere_database(db = esu_db_simapro,
+                                               biosphere_db_name_unlinked = unlinked_biosphere_db_name,
+                                               biosphere_db_name = biosphere_db_name_simapro,
+                                               verbose = True)
 print("\n------- Statistics")
 esu_db_simapro.statistics()
 
@@ -271,17 +269,14 @@ original_ecoinvent_db_simapro.apply_strategy(partial(link.link_biosphere_flows_e
 
 # Make a new biosphere database for the flows which are currently not linked
 # Add unlinked biosphere flows with a custom function
-unlinked_biosphere_flows: dict = utils.add_unlinked_flows_to_biosphere_database(db = original_ecoinvent_db_simapro,
-                                                                                biosphere_db_name_unlinked = unlinked_biosphere_db_name,
-                                                                                biosphere_db_name = biosphere_db_name_simapro,
-                                                                                add_to_existing_database = True,
-                                                                                verbose = True)
+utils.add_unlinked_flows_to_biosphere_database(db = original_ecoinvent_db_simapro,
+                                               biosphere_db_name_unlinked = unlinked_biosphere_db_name,
+                                               biosphere_db_name = biosphere_db_name_simapro,
+                                               verbose = True)
 
 print("\n------- Statistics")
 original_ecoinvent_db_simapro.statistics()
 
-# Free up memory
-del unlinked_biosphere_flows  
 
 #%% Patterns to identify inventories from different databases
 
@@ -401,11 +396,10 @@ wfldb_db_simapro.statistics()
 # wfldb_db_simapro.write_excel(only_unlinked = True)
 # Make a new biosphere database for the flows which are currently not linked
 # Add unlinked biosphere flows with a custom function
-unlinked_biosphere_flows: dict = utils.add_unlinked_flows_to_biosphere_database(db = wfldb_db_simapro,
-                                                                                biosphere_db_name_unlinked = unlinked_biosphere_db_name,
-                                                                                biosphere_db_name = biosphere_db_name_simapro,
-                                                                                add_to_existing_database = True,
-                                                                                verbose = True)
+utils.add_unlinked_flows_to_biosphere_database(db = wfldb_db_simapro,
+                                               biosphere_db_name_unlinked = unlinked_biosphere_db_name,
+                                               biosphere_db_name = biosphere_db_name_simapro,
+                                               verbose = True)
 print("\n------- Statistics")
 wfldb_db_simapro.statistics()
 
@@ -516,11 +510,10 @@ agribalyse_db_simapro.statistics()
 
 # Make a new biosphere database for the flows which are currently not linked
 # Add unlinked biosphere flows with a custom function
-unlinked_biosphere_flows: dict = utils.add_unlinked_flows_to_biosphere_database(db = agribalyse_db_simapro,
-                                                                                biosphere_db_name_unlinked = unlinked_biosphere_db_name,
-                                                                                biosphere_db_name = biosphere_db_name_simapro,
-                                                                                add_to_existing_database = True,
-                                                                                verbose = True)
+utils.add_unlinked_flows_to_biosphere_database(db = agribalyse_db_simapro,
+                                               biosphere_db_name_unlinked = unlinked_biosphere_db_name,
+                                               biosphere_db_name = biosphere_db_name_simapro,
+                                               verbose = True)
 print("\n------- Statistics")
 agribalyse_db_simapro.statistics()
 
@@ -581,11 +574,10 @@ agrifootprint_db_simapro.statistics()
 
 # Make a new biosphere database for the flows which are currently not linked
 # Add unlinked biosphere flows with a custom function
-unlinked_biosphere_flows: dict = utils.add_unlinked_flows_to_biosphere_database(db = agrifootprint_db_simapro,
-                                                                                biosphere_db_name_unlinked = unlinked_biosphere_db_name,
-                                                                                biosphere_db_name = biosphere_db_name_simapro,
-                                                                                add_to_existing_database = True,
-                                                                                verbose = True)
+utils.add_unlinked_flows_to_biosphere_database(db = agrifootprint_db_simapro,
+                                               biosphere_db_name_unlinked = unlinked_biosphere_db_name,
+                                               biosphere_db_name = biosphere_db_name_simapro,
+                                               verbose = True)
 print("\n------- Statistics")
 agrifootprint_db_simapro.statistics()
 
