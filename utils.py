@@ -74,81 +74,6 @@ def linking_summary_dictionary(db_var):
     return unique_unlinked
 
 
-#%% Define function to add unlinked biosphere flows to a (new) database
-
-def add_unlinked_flows_to_biosphere_database(db: bw2io.importers.base_lci.LCIImporter,
-                                             biosphere_db_name_unlinked: str,
-                                             biosphere_db_name: str,
-                                             verbose: bool = True) -> None:
-    
-    # Make variable check
-    hp.check_function_input_type(add_unlinked_flows_to_biosphere_database, locals())
-    
-    # Register the new database if not yet existing
-    if biosphere_db_name_unlinked not in bw2data.databases:
-        bw2data.Database(biosphere_db_name_unlinked).register()
-    
-    # Get database as bw2data Database object
-    db_unlinked: bw2data.Database = bw2data.Database(biosphere_db_name_unlinked)
-    
-    # Write list of existing biosphere flows, but only the fields extracted
-    existing: list[tuple] = [hp.format_values(tuple([v[m] for m in ("name", "top_category", "sub_category", "location", "unit")]),
-                                              case_insensitive = True,
-                                              strip = True,
-                                              remove_special_characters = False) for v in copy.deepcopy(db_unlinked)]
-    
-    # Retrieve all unlinked biosphere flows
-    unlinked_biosphere_flows = [exc for ds in db for exc in ds["exchanges"] if exc["type"] == "biosphere" and not exc.get("input")]
-    
-    # Make them unique --> remove all duplicates using the unique key feature of dicionaries
-    # Also, write the keys to lowercase and strip whitespaces in order to remove the duplicates in the next step
-    unique_unlinked_biosphere_flows = {hp.format_values(tuple([exc[m] for m in ("name", "top_category", "sub_category", "location", "unit")]),
-                                                        case_insensitive = True,
-                                                        strip = True,
-                                                        remove_special_characters = False): exc for exc in unlinked_biosphere_flows}
-    
-    # Remove the unlinked biosphere flows which are already in the database
-    unique_unlinked_biosphere_flows_dup_removed = {k: v for k, v in unique_unlinked_biosphere_flows.items() if k not in existing}
-    
-    # Raise error, if the biosphere database is empty or not found
-    if len(list(bw2data.Database(biosphere_db_name))) == 0:
-        raise ValueError("Biosphere database '" + str(biosphere_db_name) + "' not existing or empty")
-    
-    # Extract all keys that should be kept based on an already existing, random biosphere flow
-    keep_keys = list(bw2data.Database(biosphere_db_name).random().as_dict().keys())
-    
-    # Clean the biosphere flow dictionaries so that only fields are kept which are also kept in the existing biosphere
-    unlinked_biosphere_flows_cleaned = [{k: v for k, v in exc.items() if k in keep_keys} for _, exc in unique_unlinked_biosphere_flows_dup_removed.items()]
-    
-    # Adapt or add some fields, e.g. such as the database or the code
-    unlinked_biosphere_flows_adapted = [dict(exc, **{"code": str(uuid.uuid4()),
-                                                     "type": "natural resource" if exc["categories"][0].lower() in ["raw", "natural resource"] else "emission",
-                                                     "exchanges": []}) for exc in unlinked_biosphere_flows_cleaned]
-    
-    # Simply return if no unlinked flows were found that need to be added
-    if len(unlinked_biosphere_flows_adapted) == 0:
-        return
-    
-    # Loop through each flow to create newly and add to database
-    for bio_dict in unlinked_biosphere_flows_adapted:
-        bio = db_unlinked.new_activity(**bio_dict)
-        bio.save()
-    
-    # Print statement on how much activities were linked
-    if verbose:
-        print("\n------ Unlinked biosphere database update")
-        print("Registered {} new unique biosphere flows to '{}'".format(len(unlinked_biosphere_flows_adapted), biosphere_db_name_unlinked))
-    
-    # Link again
-    db.apply_strategy(partial(bw2io.utils.ExchangeLinker.link_iterable_by_fields,
-                              other = (m for m in bw2data.Database(biosphere_db_name_unlinked)),
-                              fields = ("name", "top_category", "sub_category", "location", "unit"),
-                              internal = False,
-                              kind = {"biosphere"},
-                              relink = False
-                              ), verbose = verbose)
-      
-
 
 #%% A function that uses the SBERT model to find the best match from a list
 
@@ -302,4 +227,101 @@ def extract_activity_list_with_metadata(database_name: str) -> list[dict]:
     return data
 
 
+#%% Define function to add unlinked biosphere flows to a (new) database
+
+def add_unlinked_flows_to_biosphere_database(db: bw2io.importers.base_lci.LCIImporter,
+                                             biosphere_db_name_unlinked: str,
+                                             biosphere_db_name: str,
+                                             verbose: bool = True) -> None:
+    
+    # Make variable check
+    hp.check_function_input_type(add_unlinked_flows_to_biosphere_database, locals())
+    
+    # To overcome Agroscope's anti malware system
+    use_batch_approach: bool = True
+    
+    # Register the new database if not yet existing
+    if biosphere_db_name_unlinked not in bw2data.databases:
+        bw2data.Database(biosphere_db_name_unlinked).register()
+    
+    # Get database as bw2data Database object
+    db_unlinked: bw2data.Database = bw2data.Database(biosphere_db_name_unlinked)
+    
+    # Write list of existing biosphere flows, but only the fields extracted
+    existing: list[tuple] = [hp.format_values(tuple([v[m] for m in ("name", "top_category", "sub_category", "location", "unit")]),
+                                              case_insensitive = True,
+                                              strip = True,
+                                              remove_special_characters = False) for v in copy.deepcopy(db_unlinked)]
+    
+    # Retrieve all unlinked biosphere flows
+    unlinked_biosphere_flows = [exc for ds in db for exc in ds["exchanges"] if exc["type"] == "biosphere" and not exc.get("input")]
+    
+    # Make them unique --> remove all duplicates using the unique key feature of dicionaries
+    # Also, write the keys to lowercase and strip whitespaces in order to remove the duplicates in the next step
+    unique_unlinked_biosphere_flows = {hp.format_values(tuple([exc[m] for m in ("name", "top_category", "sub_category", "location", "unit")]),
+                                                        case_insensitive = True,
+                                                        strip = True,
+                                                        remove_special_characters = False): exc for exc in unlinked_biosphere_flows}
+    
+    # Remove the unlinked biosphere flows which are already in the database
+    unique_unlinked_biosphere_flows_dup_removed = {k: v for k, v in unique_unlinked_biosphere_flows.items() if k not in existing}
+    
+    # Raise error, if the biosphere database is empty or not found
+    if len(list(bw2data.Database(biosphere_db_name))) == 0:
+        raise ValueError("Biosphere database '" + str(biosphere_db_name) + "' not existing or empty")
+    
+    # Extract all keys that should be kept based on an already existing, random biosphere flow
+    keep_keys = list(bw2data.Database(biosphere_db_name).random().as_dict().keys())
+    
+    # Clean the biosphere flow dictionaries so that only fields are kept which are also kept in the existing biosphere
+    unlinked_biosphere_flows_cleaned = [{k: v for k, v in exc.items() if k in keep_keys} for _, exc in unique_unlinked_biosphere_flows_dup_removed.items()]
+    
+    # Adapt or add some fields, e.g. such as the database or the code
+    unlinked_biosphere_flows_adapted = [dict(exc, **{"code": str(uuid.uuid4()),
+                                                     "type": "natural resource" if exc["categories"][0].lower() in ["raw", "natural resource"] else "emission",
+                                                     "exchanges": []}) for exc in unlinked_biosphere_flows_cleaned]
+    
+    # Simply return if no unlinked flows were found that need to be added
+    if len(unlinked_biosphere_flows_adapted) == 0:
+        return
+    
+    # Check if we use the batch approach (True) or the individual approach (False)
+    if use_batch_approach:
+        
+        # Check if the database already exists
+        if biosphere_db_name_unlinked in bw2data.databases:
+            
+            # If yes, we make a copy of it
+            db_unlinked: bw2io.importers.base_lci.LCIImporter = copy_brightway_database(db_name = biosphere_db_name, new_db_name = biosphere_db_name_unlinked)
+        
+        else:
+            # If not, we simply register a new database importer object
+            db_unlinked: bw2io.importers.base_lci.LCIImporter = bw2io.importers.base_lci.LCIImporter(biosphere_db_name_unlinked)
+        
+        # Add the new data to the existing data
+        db_unlinked.data += [{**m, "database": biosphere_db_name_unlinked} for m in unlinked_biosphere_flows_adapted]
+        
+        # Write the database
+        db_unlinked.write_database(delete_existing = True)
+    
+    else:
+        # Loop through each flow to create newly and add to database
+        for bio_dict in unlinked_biosphere_flows_adapted:
+            bio = db_unlinked.new_activity(**bio_dict)
+            bio.save()
+    
+    # Print statement on how much activities were linked
+    if verbose:
+        print("\n------ Unlinked biosphere database update")
+        print("Registered {} new unique biosphere flows to '{}'".format(len(unlinked_biosphere_flows_adapted), biosphere_db_name_unlinked))
+    
+    # Link again
+    db.apply_strategy(partial(bw2io.utils.ExchangeLinker.link_iterable_by_fields,
+                              other = (m for m in bw2data.Database(biosphere_db_name_unlinked)),
+                              fields = ("name", "top_category", "sub_category", "location", "unit"),
+                              internal = False,
+                              kind = {"biosphere"},
+                              relink = False
+                              ), verbose = verbose)
+      
 
