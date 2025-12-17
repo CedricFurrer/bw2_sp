@@ -33,11 +33,11 @@ from lci import (unregionalize_biosphere,
                  select_inventory_using_regex)
 
 from harmonization import (create_harmonized_biosphere_migration,
-                           create_harmonized_activity_migration,
+                           # create_harmonized_activity_migration,
                            elementary_flows_that_are_not_used_in_XML_methods)
 
-from harmonization_class import (ActivityHarmonization,
-                                 ActivityDefinition)
+from activity_harmonization import (ActivityHarmonization,
+                                    ActivityDefinition)
 
 # from correspondence.correspondence import (create_correspondence_mapping)
 from correspondence.correspondence import Correspondence
@@ -79,7 +79,8 @@ else:
     project_path: pathlib.Path = here / "Brightway2_projects"
     
 project_path.mkdir(exist_ok = True)
-project_name: str = "Brightway paper"
+# project_name: str = "Brightway paper"
+project_name: str = "test"
 
 # Correspondence files
 folderpath_correspondence_files: pathlib.Path = here.parent / "correspondence" / "data"
@@ -215,28 +216,25 @@ original_ecoinvent_db_simapro.apply_strategy(partial(link.link_biosphere_flows_e
 
 # Make a new biosphere database for the flows which are currently not linked
 # Add unlinked biosphere flows with a custom function
-unlinked_biosphere_flows: dict = utils.add_unlinked_flows_to_biosphere_database(db = original_ecoinvent_db_simapro,
-                                                                                biosphere_db_name_unlinked = unlinked_biosphere_db_name,
-                                                                                biosphere_db_name = biosphere_db_name_simapro,
-                                                                                add_to_existing_database = True,
-                                                                                verbose = True)
+utils.add_unlinked_flows_to_biosphere_database(db = original_ecoinvent_db_simapro,
+                                               biosphere_db_name_unlinked = unlinked_biosphere_db_name,
+                                               biosphere_db_name = biosphere_db_name_simapro,
+                                               verbose = True)
 
 print("\n------- Statistics")
 original_ecoinvent_db_simapro.statistics()
 
-# Free up memory
-del unlinked_biosphere_flows  
 
 #%% Patterns to identify inventories from different databases
 
 # Specific patterns that are used to identify SALCA inventories
 SALCA_patterns: list[str] = ["SALCA", # abbreviation to identify SALCA inventories
-                            "SLACA", # WOW... I mean come on...
-                            "at plant/CH mix", # some CH mixes that were created without the SALCA abbreviation
-                            "maize silage, conservation, sect.", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
-                            "maize silage, horiz. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
-                            "maize silage, tow. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
-                            ]
+                             "SLACA", # WOW... I mean come on...
+                             "at plant/CH mix", # some CH mixes that were created without the SALCA abbreviation
+                             "maize silage, conservation, sect.", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
+                             "maize silage, horiz. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
+                             "maize silage, tow. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
+                             ]
 
 # Specific patterns that are used to identify WFLDB inventories
 WFLDB_patterns: list[str] = ["WFLDB", # because why not finding WFLDB inventories in SALCA/ecoinvent?
@@ -279,8 +277,8 @@ ecoinvent_db_simapro.write_database()
 
 
 #%% Import unregionalized ecoinvent LCI database from SimaPro
-
-ecoinvent_db_simapro_unreg: bw2io.importers.base_lci.LCIImporter = copy.deepcopy(ecoinvent_db_simapro)
+ecoinvent_db_simapro_unreg: bw2io.importers.base_lci.LCIImporter = bw2io.importers.base_lci.LCIImporter(ecoinvent_db_name_simapro_unreg)
+ecoinvent_db_simapro_unreg.data = copy.deepcopy(ecoinvent_db_simapro.data)
 ecoinvent_db_simapro_unreg.apply_strategy(partial(change_database_name,
                                                   new_db_name = ecoinvent_db_name_simapro_unreg,
                                                   ))
@@ -373,11 +371,10 @@ wfldb_db_simapro.statistics()
 # wfldb_db_simapro.write_excel(only_unlinked = True)
 # Make a new biosphere database for the flows which are currently not linked
 # Add unlinked biosphere flows with a custom function
-unlinked_biosphere_flows: dict = utils.add_unlinked_flows_to_biosphere_database(db = wfldb_db_simapro,
-                                                                                biosphere_db_name_unlinked = unlinked_biosphere_db_name,
-                                                                                biosphere_db_name = biosphere_db_name_simapro,
-                                                                                add_to_existing_database = True,
-                                                                                verbose = True)
+utils.add_unlinked_flows_to_biosphere_database(db = wfldb_db_simapro,
+                                               biosphere_db_name_unlinked = unlinked_biosphere_db_name,
+                                               biosphere_db_name = biosphere_db_name_simapro,
+                                               verbose = True)
 print("\n------- Statistics")
 wfldb_db_simapro.statistics()
 
@@ -509,11 +506,10 @@ agribalyse_db_simapro.statistics()
 
 # Make a new biosphere database for the flows which are currently not linked
 # Add unlinked biosphere flows with a custom function
-unlinked_biosphere_flows: dict = utils.add_unlinked_flows_to_biosphere_database(db = agribalyse_db_simapro,
-                                                                                biosphere_db_name_unlinked = unlinked_biosphere_db_name,
-                                                                                biosphere_db_name = biosphere_db_name_simapro,
-                                                                                add_to_existing_database = True,
-                                                                                verbose = True)
+utils.add_unlinked_flows_to_biosphere_database(db = agribalyse_db_simapro,
+                                               biosphere_db_name_unlinked = unlinked_biosphere_db_name,
+                                               biosphere_db_name = biosphere_db_name_simapro,
+                                               verbose = True)
 print("\n------- Statistics")
 agribalyse_db_simapro.statistics()
 
@@ -536,7 +532,7 @@ agribalyse_db_updated_simapro.apply_strategy(partial(change_database_name,
                                                      ))
 
 # Free up memory
-del agribalyse_db_simapro, unlinked_biosphere_flows
+del agribalyse_db_simapro
 
 
 #%% Import AgriFootprint LCI database from SimaPro
@@ -585,11 +581,10 @@ agrifootprint_db_simapro.statistics()
 
 # Make a new biosphere database for the flows which are currently not linked
 # Add unlinked biosphere flows with a custom function
-unlinked_biosphere_flows: dict = utils.add_unlinked_flows_to_biosphere_database(db = agrifootprint_db_simapro,
-                                                                                biosphere_db_name_unlinked = unlinked_biosphere_db_name,
-                                                                                biosphere_db_name = biosphere_db_name_simapro,
-                                                                                add_to_existing_database = True,
-                                                                                verbose = True)
+utils.add_unlinked_flows_to_biosphere_database(db = agrifootprint_db_simapro,
+                                               biosphere_db_name_unlinked = unlinked_biosphere_db_name,
+                                               biosphere_db_name = biosphere_db_name_simapro,
+                                               verbose = True)
 print("\n------- Statistics")
 agrifootprint_db_simapro.statistics()
 
@@ -612,7 +607,7 @@ agrifootprint_db_updated_simapro.apply_strategy(partial(change_database_name,
                                                         ))
 
 # Free up memory
-del agrifootprint_db_simapro, unlinked_biosphere_flows
+del agrifootprint_db_simapro
 
 
 #%% Import ecoinvent data from ecoinvent XML setup
@@ -854,11 +849,11 @@ print()
  
 # Make a new biosphere database for the flows which are currently not linked
 # Add unlinked biosphere flows with a custom function
-unlinked_biosphere_flows: dict = utils.add_unlinked_flows_to_biosphere_database(db = ecoinvent_db_xml_migrated,
-                                                                                biosphere_db_name_unlinked = unlinked_biosphere_db_name,
-                                                                                biosphere_db_name = biosphere_db_name_simapro,
-                                                                                add_to_existing_database = True,
-                                                                                verbose = True)
+utils.add_unlinked_flows_to_biosphere_database(db = ecoinvent_db_xml_migrated,
+                                               biosphere_db_name_unlinked = unlinked_biosphere_db_name,
+                                               biosphere_db_name = biosphere_db_name_simapro,
+                                               verbose = True)
+
 # Show statistic of current linking of database import
 print("\n-----------Linking statistics of current database import")
 ecoinvent_db_xml_migrated.statistics()
@@ -901,7 +896,7 @@ for filename, FROM_version, TO_version in correspondence_files_and_versions:
     correspondence_obj.read_correspondence_dataframe(filepath_correspondence_excel = here.parent / "correspondence" / "data" / filename,
                                                      FROM_version = FROM_version,
                                                      TO_version = TO_version
-                                                 )
+                                                     )
 
 #%% Specify the activities that can be mapped to
 activities_to_migrate_to: list[dict] = [m.as_dict() for m in bw2data.Database(ecoinvent_db_name_xml_migrated)]
@@ -1205,32 +1200,37 @@ agrifootprint_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit
 # Initialize the activity harmonization class
 agrifootprint_ah: ActivityHarmonization = copy.deepcopy(ah)
 
+# Specify the from and to version for the correspondence mapping to be applied to the agrifootprint database
+agrifootprint_correspondence_from_version: tuple[int, int] = (3, 8)
+agrifootprint_correspondence_to_version: tuple[int, int] = (3, 12)
+agrifootprint_correspondence_from_to_version: tuple[tuple[int, int], tuple[int, int]] = (agrifootprint_correspondence_from_version, agrifootprint_correspondence_to_version)
+
 # Interlink correspondence files
-correspondence_obj.interlink_correspondence_files((3, 8), (3, 12))
-ecoinvent_correspondence_v38_to_v312: pd.DataFrame = correspondence_obj.df_interlinked_data[((3, 8), (3, 12))]
-ecoinvent_correspondence_v38_to_v312.to_excel(output_path / "interlinked_correspondence_files_38_312.xlsx")
+correspondence_obj.interlink_correspondence_files(agrifootprint_correspondence_from_to_version)
+ecoinvent_correspondence_for_agrifootprint: pd.DataFrame = correspondence_obj.df_interlinked_data[agrifootprint_correspondence_from_to_version]
+ecoinvent_correspondence_for_agrifootprint.to_excel(output_path / "interlinked_correspondence_files_{}_{}.xlsx".format("_".join(agrifootprint_correspondence_from_version), "_".join(agrifootprint_correspondence_to_version)))
 
 # Add correspondence mappings to activity harmonization class
-for idx, row in ecoinvent_correspondence_v38_to_v312.iterrows():
+for idx, row in ecoinvent_correspondence_for_agrifootprint.iterrows():
     
-    source: ActivityDefinition = ActivityDefinition(activity_code = row.get("FROM_activity_uuid"),
-                                                    reference_product_code = row.get("FROM_reference_product_uuid"),
-                                                    activity_name = row.get("FROM_activity_name"),
-                                                    reference_product_name = row.get("FROM_reference_product_name"),
+    source: ActivityDefinition = ActivityDefinition(activity_code = row["FROM_activity_uuid"],
+                                                    reference_product_code = row["FROM_reference_product_uuid"],
+                                                    activity_name = row["FROM_activity_name"],
+                                                    reference_product_name = row["FROM_reference_product_name"],
                                                     name = None,
                                                     simapro_name = None,
-                                                    location = row.get("FROM_location"),
-                                                    unit = row.get("FROM_unit")
+                                                    location = row["FROM_location"],
+                                                    unit = row["FROM_unit"]
                                                     )
     
-    target: ActivityDefinition = ActivityDefinition(activity_code = row.get("TO_activity_uuid"),
-                                                    reference_product_code = row.get("TO_reference_product_uuid"),
-                                                    activity_name = row.get("TO_activity_name"),
-                                                    reference_product_name = row.get("TO_reference_product_name"),
+    target: ActivityDefinition = ActivityDefinition(activity_code = row["TO_activity_uuid"],
+                                                    reference_product_code = row["TO_reference_product_uuid"],
+                                                    activity_name = row["TO_activity_name"],
+                                                    reference_product_name = row["TO_reference_product_name"],
                                                     name = None,
                                                     simapro_name = None,
-                                                    location = row.get("TO_location"),
-                                                    unit = row.get("TO_unit")
+                                                    location = row["TO_location"],
+                                                    unit = row["TO_unit"]
                                                     )
     
     agrifootprint_ah.add_to_correspondence_mapping(source = source,
@@ -1248,20 +1248,20 @@ for idx, row in agrifootprint_custom_migration_df.iterrows():
                                                     reference_product_code = None,
                                                     activity_name = None,
                                                     reference_product_name = None,
-                                                    name = row.get("FROM_name"),
+                                                    name = row["FROM_name"],
                                                     simapro_name = None,
-                                                    location = row.get("FROM_location"),
-                                                    unit = row.get("FROM_unit")
+                                                    location = row["FROM_location"],
+                                                    unit = row["FROM_unit"]
                                                     )
     
     target: ActivityDefinition = ActivityDefinition(activity_code = None,
                                                     reference_product_code = None,
                                                     activity_name = None,
                                                     reference_product_name = None,
-                                                    name = row.get("TO_name"),
+                                                    name = row["TO_name"],
                                                     simapro_name = None,
-                                                    location = row.get("TO_location"),
-                                                    unit = row.get("TO_unit")
+                                                    location = row["TO_location"],
+                                                    unit = row["TO_unit"]
                                                     )
     
     agrifootprint_ah.add_to_custom_mapping(source = source,
@@ -1281,14 +1281,14 @@ agrifootprint_unsuccessful: tuple = ()
 
 for _, exc in agrifootprint_exchanges_to_migrate_to_ecoinvent.items():
     
-    query: ActivityDefinition = ActivityDefinition(activity_code = exc.get("activity_code"), 
-                                                   reference_product_code = exc.get("reference_product_code"), 
-                                                   activity_name = exc.get("activity_name"),
-                                                   reference_product_name = exc.get("reference_product_name"),
-                                                   name = exc.get("name"),
-                                                   simapro_name = exc.get("SimaPro_name"),
-                                                   location = exc.get("location"),
-                                                   unit = exc.get("unit")
+    query: ActivityDefinition = ActivityDefinition(activity_code = exc["activity_code"], 
+                                                   reference_product_code = exc["reference_product_code"], 
+                                                   activity_name = exc["activity_name"],
+                                                   reference_product_name = exc["reference_product_name"],
+                                                   name = exc["name"],
+                                                   simapro_name = exc["SimaPro_name"],
+                                                   location = exc["location"],
+                                                   unit = exc["unit"]
                                                    )
     
     if agrifootprint_ah.map_directly(query = query) != ():
@@ -1309,17 +1309,10 @@ if len(agrifootprint_unsuccessful_queries) > 0:
     agrifootprint_ah.map_using_SBERT(queries = agrifootprint_unsuccessful_queries)
     # agrifootprint_successful += agrifootprint_ah.map_using_correspondence_mapping(query = query) + ("Correspondence mapping",)
 
-
-AGF_background_ei_migration: dict = create_harmonized_activity_migration(flows_1 = list(agrifootprint_exchanges_to_migrate_to_ecoinvent.values()),
-                                                                         flows_2 = activities_to_migrate_to,
-                                                                         df_custom_mapping = None,
-                                                                         df_ecoinvent_correspondence_mapping = ecoinvent_correspondence_v38_to_v312,
-                                                                         use_SBERT_for_mapping = True)
-
-# SBERT to map for activities
-unsuccessfully_migrated += [{**{"FROM_" + k: v for k, v in m.items()}, **{"Database": agrifootprint_db_name_updated_simapro}} for m, _ in AGF_background_ei_migration["unsuccessfully_migrated_activity_flows"]]
-successfully_migrated += [{**{"FROM_" + k: v for k, v in m.items()}, **{"TO_" + k: v for k, v in n.items()}, **{"Database": agrifootprint_db_name_updated_simapro}} for m, n in AGF_background_ei_migration["successfully_migrated_activity_flows"]]
-SBERT_to_map += [{**m, **{"Database": agrifootprint_db_name_updated_simapro}} for m in AGF_background_ei_migration["SBERT_to_map"]]
+for FROM, TOs, linking_method in agrifootprint_successful:
+    FROM_tuple: tuple = ...
+    FROM_dict: dict = 
+AGF_background_ei_migration: dict = ...
 
 # Create the JSON object to be written
 AGF_background_ei_migration_in_json_format = json.dumps(AGF_background_ei_migration["activity_migration"], indent = 3)
