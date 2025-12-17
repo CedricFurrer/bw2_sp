@@ -166,9 +166,9 @@ def copy_brightway_database(db_name: str,
     if db_name not in bw2data.databases:
         raise ValueError("Database '{}' is not registered in the Brightway background and can therefore not be copied. Available databases are:\n{}".format(db_name, bw2data.databases))
         
-    # Check if a database is already existing with the new name. If yes, we can not register a database with the new name and need to raise an error.
-    if new_db_name in bw2data.databases:
-        raise ValueError("New database name '{}' can not be used because a database with this name already exists in Brightway. Use another name.".format(new_db_name))
+    # # Check if a database is already existing with the new name. If yes, we can not register a database with the new name and need to raise an error.
+    # if new_db_name in bw2data.databases:
+    #     raise ValueError("New database name '{}' can not be used because a database with this name already exists in Brightway. Use another name.".format(new_db_name))
     
     # Load data from the database and make a deepcopy
     db: list[dict] = [{**act.as_dict(), **{"exchanges": [exc.as_dict() for exc in act.exchanges()]}} for act in bw2data.Database(db_name)]
@@ -178,9 +178,10 @@ def copy_brightway_database(db_name: str,
     db_as_obj: bw2io.importers.base_lci.LCIImporter = bw2io.importers.base_lci.LCIImporter(new_db_name)
     db_as_obj.data: list[dict] = copied
     
-    # Change database name
-    db_as_obj.apply_strategy(partial(change_database_name,
-                                     new_db_name = new_db_name))
+    # Change database name, only if the names are different
+    if new_db_name != db_name:
+        db_as_obj.apply_strategy(partial(change_database_name,
+                                         new_db_name = new_db_name))
     
     return db_as_obj
     
@@ -292,7 +293,7 @@ def add_unlinked_flows_to_biosphere_database(db: bw2io.importers.base_lci.LCIImp
         if biosphere_db_name_unlinked in bw2data.databases:
             
             # If yes, we make a copy of it
-            db_unlinked: bw2io.importers.base_lci.LCIImporter = copy_brightway_database(db_name = biosphere_db_name, new_db_name = biosphere_db_name_unlinked)
+            db_unlinked: bw2io.importers.base_lci.LCIImporter = copy_brightway_database(db_name = biosphere_db_name_unlinked, new_db_name = biosphere_db_name_unlinked)
         
         else:
             # If not, we simply register a new database importer object
