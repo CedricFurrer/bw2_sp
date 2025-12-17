@@ -79,32 +79,23 @@ def linking_summary_dictionary(db_var):
 def add_unlinked_flows_to_biosphere_database(db: bw2io.importers.base_lci.LCIImporter,
                                              biosphere_db_name_unlinked: str,
                                              biosphere_db_name: str,
-                                             add_to_existing_database: bool = True,
-                                             verbose: bool = True):
+                                             verbose: bool = True) -> None:
     
     # Make variable check
     hp.check_function_input_type(add_unlinked_flows_to_biosphere_database, locals())
-
-    # Extract available datasets in the unlinked biosphere database
-    if add_to_existing_database:
-        
-        # Load all flows from the background to a dictionary
-        biosphere_unlinked_loaded = {(m["database"], m["code"]): dict(m.as_dict(), **{"exchanges": []}) for m in copy.deepcopy(bw2data.Database(biosphere_db_name_unlinked))}
-        
-        # Write list of existing biosphere flows, but only the fields extracted
-        existing = [hp.format_values(tuple([v[m] for m in ("name", "top_category", "sub_category", "location", "unit")]),
-                                     case_insensitive = True,
-                                     strip = True,
-                                     remove_special_characters = False) for _, v in biosphere_unlinked_loaded.items()]
     
-    else:
-        # Use empty lists if we do not want to keep the original biosphere flows
-        biosphere_unlinked_loaded = {}
-        existing = []
-        
-        # If we do not want to add to an existing database BUT the database we want to write to already exist, raise Error!
-        if biosphere_db_name_unlinked in bw2data.databases:
-            raise ValueError("The database '" + biosphere_db_name_unlinked + "' (provided as variable 'biosphere_new_name') is already registered as database. Either use another name or switch variable 'add_to_existing_database' to True")
+    # Register the new database if not yet existing
+    if biosphere_db_name_unlinked not in bw2data.databases:
+        bw2data.Database(biosphere_db_name_unlinked).register()
+    
+    # Get database as bw2data Database object
+    db_unlinked: bw2data.Database = bw2data.Database(biosphere_db_name_unlinked)
+    
+    # Write list of existing biosphere flows, but only the fields extracted
+    existing: list[tuple] = [hp.format_values(tuple([v[m] for m in ("name", "top_category", "sub_category", "location", "unit")]),
+                                              case_insensitive = True,
+                                              strip = True,
+                                              remove_special_characters = False) for v in copy.deepcopy(db_unlinked)]
     
     # Retrieve all unlinked biosphere flows
     unlinked_biosphere_flows = [exc for ds in db for exc in ds["exchanges"] if exc["type"] == "biosphere" and not exc.get("input")]
@@ -132,46 +123,23 @@ def add_unlinked_flows_to_biosphere_database(db: bw2io.importers.base_lci.LCIImp
     # Adapt or add some fields, e.g. such as the database or the code
     unlinked_biosphere_flows_adapted = [dict(exc, **{"code": str(uuid.uuid4()),
                                                      "type": "natural resource" if exc["categories"][0].lower() in ["raw", "natural resource"] else "emission",
-                                                     "database": biosphere_db_name_unlinked,
                                                      "exchanges": []}) for exc in unlinked_biosphere_flows_cleaned]
     
-    # The final dictionary structure with tuple code and database as keys and the whole dictionary as value
-    new = {(exc["database"], exc["code"]): exc for exc in unlinked_biosphere_flows_adapted}
-    
-    # Merge both, already existing and new biosphere flows
-    biosphere_new_data = {**biosphere_unlinked_loaded, **new}
-    
     # Simply return if no unlinked flows were found that need to be added
-    if new == {}:
-        return biosphere_new_data
+    if len(unlinked_biosphere_flows_adapted) == 0:
+        return
     
-    # Delete database, if it exists
-    # Reason: we need to delete it first and write it afterwards again
-    if biosphere_db_name_unlinked in bw2data.databases:
-        
-        # Print statement
-        if verbose:
-            print(starting + "Delete database first: " + biosphere_db_name_unlinked)
-        
-        # Delete database
-        del bw2data.databases[biosphere_db_name_unlinked]
-        
-        # Add line to console
-        if verbose:
-            print("")
+    # Loop through each flow to create newly and add to database
+    for bio_dict in unlinked_biosphere_flows_adapted:
+        bio = db_unlinked.new_activity(**bio_dict)
+        bio.save()
     
-    
-    # Print statement
+    # Print statement on how much activities were linked
     if verbose:
-        print(starting + "Write database: " + biosphere_db_name_unlinked)
+        print("\n------ Unlinked biosphere database update")
+        print("Registered {} new unique biosphere flows to '{}'".format(len(unlinked_biosphere_flows_adapted), biosphere_db_name_unlinked))
     
-    # Register the new database
-    bw2data.Database(biosphere_db_name_unlinked).register()
-        
-    # Write the new flows to the new biosphere
-    bw2data.Database(biosphere_db_name_unlinked).write(biosphere_new_data)
-    
-    # ... and link again
+    # Link again
     db.apply_strategy(partial(bw2io.utils.ExchangeLinker.link_iterable_by_fields,
                               other = (m for m in bw2data.Database(biosphere_db_name_unlinked)),
                               fields = ("name", "top_category", "sub_category", "location", "unit"),
@@ -179,8 +147,7 @@ def add_unlinked_flows_to_biosphere_database(db: bw2io.importers.base_lci.LCIImp
                               kind = {"biosphere"},
                               relink = False
                               ), verbose = verbose)
-    
-    return biosphere_new_data    
+      
 
 
 #%% A function that uses the SBERT model to find the best match from a list
