@@ -27,19 +27,16 @@ from lci import (unregionalize_biosphere,
                  import_XML_LCI_inventories,
                  migrate_from_excel_file,
                  migrate_from_json_file,
-                 create_structured_migration_dictionary_from_excel,
                  create_XML_biosphere_from_elmentary_exchanges_file,
                  create_XML_biosphere_from_LCI,
                  select_inventory_using_regex)
 
 from harmonization import (create_harmonized_biosphere_migration,
-                           # create_harmonized_activity_migration,
                            elementary_flows_that_are_not_used_in_XML_methods)
 
 from activity_harmonization import (ActivityHarmonization,
                                     ActivityDefinition)
 
-# from correspondence.correspondence import (create_correspondence_mapping)
 from correspondence.correspondence import Correspondence
 
 from utils import (change_brightway_project_directory,
@@ -79,8 +76,8 @@ else:
     project_path: pathlib.Path = here / "Brightway2_projects"
     
 project_path.mkdir(exist_ok = True)
-# project_name: str = "Brightway paper"
-project_name: str = "test"
+project_name: str = "Brightway paper"
+# project_name: str = "test"
 
 # Correspondence files
 folderpath_correspondence_files: pathlib.Path = here.parent / "correspondence" / "data"
@@ -117,7 +114,10 @@ filename_biosphere_flows_not_specified_in_XML_methods: str = "biosphere_flows_no
 
 # Other
 filename_SBERT_biosphere_names_validated: str = "manually_checked_SBERT_biosphere_names.xlsx"
-filename_SBERT_activity_names_validated: str = "manually_checked_SBERT_activity_names.xlsx"
+filename_agribalyse_custom_mapping_harmonization: str = "custom_mapping_harmonization_AGB.xlsx"
+filename_wfldb_custom_mapping_harmonization: str = "custom_mapping_harmonization_WFLDB.xlsx"
+filename_salca_custom_mapping_harmonization: str = "custom_mapping_harmonization_SALCA.xlsx"
+filename_agrifootprint_custom_mapping_harmonization: str = "custom_mapping_harmonization_AGF.xlsx"
 
 #%% Defaults for key variables
 biosphere_db_name_simapro: str = "biosphere3 - from SimaPro"
@@ -874,7 +874,6 @@ del ecoinvent_db_xml_migrated
 
 
 #%% Create correspondence mapping
-
 correspondence_files_and_versions: list[tuple] = [("Correspondence-File-v3.1-v3.2.xlsx", (3, 1), (3, 2)),
                                                   ("Correspondence-File-v3.2-v3.3.xlsx", (3, 2), (3, 3)),
                                                   ("Correspondence-File-v3.3-v3.4.xlsx", (3, 3), (3, 4)),
@@ -890,20 +889,25 @@ correspondence_files_and_versions: list[tuple] = [("Correspondence-File-v3.1-v3.
                                                   ("Correspondence-File-v3.11-v3.12.xlsx", (3, 11), (3, 12)),
                                                   ]
 
+# Create correspondence object
 correspondence_obj: Correspondence = Correspondence(ecoinvent_model_type = "cutoff")
 
+# Add the correspondence data to the correspondence object
 for filename, FROM_version, TO_version in correspondence_files_and_versions:
     correspondence_obj.read_correspondence_dataframe(filepath_correspondence_excel = here.parent / "correspondence" / "data" / filename,
                                                      FROM_version = FROM_version,
                                                      TO_version = TO_version
                                                      )
+    
+# Get the standardized correspondence data and write to xlsx
+correspondence_standardized_df: pd.DataFrame = correspondence_obj.standardized_df
+correspondence_standardized_df.to_excel(output_path / "correspondence_files_standardized.xlsx", index = False)
 
 #%% Specify the activities that can be mapped to
 activities_to_migrate_to: list[dict] = [m.as_dict() for m in bw2data.Database(ecoinvent_db_name_xml_migrated)]
 
 # Initialize the activity harmonization class
-ah: ActivityHarmonization = ActivityHarmonization(model = "Cut-off",
-                                                  system = "Unit")
+ah: ActivityHarmonization = ActivityHarmonization()
 
 # Add the items to which should be migrated to
 for ds in activities_to_migrate_to:
@@ -920,31 +924,250 @@ for ds in activities_to_migrate_to:
     # ah.add_TO(source = copy.deepcopy(source), target = copy.deepcopy(ds), multiplier = 1)
     ah.add_TO(source = source, target = copy.deepcopy(ds), multiplier = 1)
 
+# Specify the fields to which should be mapped to
+TO_fields = ("code",
+             "name",
+             "SimaPro_name",
+             "categories",
+             "top_category",
+             "sub_category",
+             "SimaPro_categories",
+             "unit",
+             "SimaPro_unit",
+             "location")
+
+#%% Trigger the encoding of the SBERT model from the TO's by calling the '.SBERT_mapping'
+# This is a heavy calculation and will be done here once so that it can be reused
+ah.SBERT_mapping
 
 #%% Create default variables to log data
 unsuccessfully_migrated: list[dict] = []
 successfully_migrated: list[dict] = []
-SBERT_to_map: list[dict] = []
 
-#%% Create the Agribalyse background activity migration --> all ecoinvent v3.8 found in the background from Agribalyse should be updated to ecoinvent v3.10, if possible
+#%% Custom functions to facilitate repetitive tasks
+def add_correspondence_mappings(activity_harmonization_obj: ActivityHarmonization,
+                                correspondence_obj: Correspondence,
+                                FROM_version: tuple[int, int],
+                                TO_version: tuple[int, int]) -> None:
+    
+    # Create tuple of from and to version
+    correspondence_from_to_version: tuple[tuple[int, int], tuple[int, int]] = (FROM_version, TO_version)
+
+    # Interlink correspondence files
+    correspondence_obj.interlink_correspondence_files(FROM_version, TO_version)
+    interlinked_df: pd.DataFrame = correspondence_obj.df_interlinked_data[correspondence_from_to_version]
+    
+    # Add correspondence mappings to activity harmonization class
+    for idx, row in interlinked_df.iterrows():
+        
+        # Create source activity definition
+        source: ActivityDefinition = ActivityDefinition(activity_code = row["FROM_activity_uuid"],
+                                                        reference_product_code = row["FROM_reference_product_uuid"],
+                                                        activity_name = row["FROM_activity_name"],
+                                                        reference_product_name = row["FROM_reference_product_name"],
+                                                        name = None,
+                                                        simapro_name = None,
+                                                        location = row["FROM_location"],
+                                                        unit = row["FROM_unit"]
+                                                        )
+        # Create target activity definition
+        target: ActivityDefinition = ActivityDefinition(activity_code = row["TO_activity_uuid"],
+                                                        reference_product_code = row["TO_reference_product_uuid"],
+                                                        activity_name = row["TO_activity_name"],
+                                                        reference_product_name = row["TO_reference_product_name"],
+                                                        name = None,
+                                                        simapro_name = None,
+                                                        location = row["TO_location"],
+                                                        unit = row["TO_unit"]
+                                                        )
+        # Add to harmonization object
+        activity_harmonization_obj.add_to_correspondence_mapping(source = source,
+                                                                 target = target,
+                                                                 multiplier = row.get("Multiplier")
+                                                                 )
+
+
+def add_custom_mappings(activity_harmonization_obj: ActivityHarmonization,
+                        custom_mapping_df: pd.DataFrame) -> None:
+    
+    # Add custom mappings to activity harmonization class
+    for idx, row in custom_mapping_df.iterrows():
+        
+        # Create source activity definition
+        source: ActivityDefinition = ActivityDefinition(activity_code = None,
+                                                        reference_product_code = None,
+                                                        activity_name = None,
+                                                        reference_product_name = None,
+                                                        name = row["FROM_name"],
+                                                        simapro_name = None,
+                                                        location = row["FROM_location"],
+                                                        unit = row["FROM_unit"]
+                                                        )
+        
+        # Create target activity definition
+        target: ActivityDefinition = ActivityDefinition(activity_code = None,
+                                                        reference_product_code = None,
+                                                        activity_name = None,
+                                                        reference_product_name = None,
+                                                        name = row["TO_name"],
+                                                        simapro_name = None,
+                                                        location = row["TO_location"],
+                                                        unit = None
+                                                        )
+        # Add to harmonization object
+        activity_harmonization_obj.add_to_custom_mapping(source = source,
+                                                         target = target,
+                                                         multiplier = row["multiplier"]
+                                                         )
+
+
+def map_activities(db_name: str,
+                   exchanges_to_migrate: list[dict],
+                   activity_harmonization_obj: ActivityHarmonization) -> (tuple, pd.DataFrame, pd.DataFrame):
+    
+    # Initialize tuples
+    successful: tuple = ()
+    unsuccessful: tuple = ()
+    
+    # Loop through each exchange that should be migrated
+    for _, exc in exchanges_to_migrate.items():
+        
+        # Create a query as activity definition object
+        query: ActivityDefinition = ActivityDefinition(activity_code = exc.get("activity_code"), 
+                                                       reference_product_code = exc.get("reference_product_code"), 
+                                                       activity_name = exc["activity_name"],
+                                                       reference_product_name = exc["reference_product_name"],
+                                                       name = exc["name"],
+                                                       simapro_name = exc["SimaPro_name"],
+                                                       location = exc["location"],
+                                                       unit = exc["unit"]
+                                                       )
+        # Map directly
+        direct: tuple = activity_harmonization_obj.map_directly(query = query)
+        if direct != ():
+            successful += ((direct[0][0], direct[0][1], "Direct mapping"),)
+            continue
+        
+        # Map using custom mapping
+        custom: tuple = activity_harmonization_obj.map_using_custom_mapping(query = query)
+        if custom != ():
+            successful += ((custom[0][0], custom[0][1], "Custom mapping"),)
+            continue
+        
+        # Map using correspondence files
+        correspondence: tuple = activity_harmonization_obj.map_using_correspondence_mapping(query = query)
+        if correspondence != ():
+            successful += ((correspondence[0][0], correspondence[0][1], "Correspondence mapping"),)
+            continue
+        
+        # If we end here, we were unsuccessful. We add the query
+        unsuccessful += (query,)
+            
+    # If there are unsuccessful queries, try using the SBERT model to find an equivalent
+    if len(unsuccessful) > 0:
+        sbert: tuple = activity_harmonization_obj.map_using_SBERT_mapping(queries = unsuccessful,
+                                                                          n = 3,
+                                                                          cutoff = 0.90)
+        successful += tuple([m + ("SBERT mapping",) for m in sbert])
+    
+    # Print the amount of exchanges that were successfully migrated
+    print("{} exchanges migrated".format(len(successful)))
+    
+    # Check if the FROM location matches with any of the TO locations
+    # If that is the case, we remove all TOs but the one with the matching location and set multiplier to 1
+    counter: int = 0
+    for FROM, TOs, linking_method in successful:
+        FROM_location: (str | None) = FROM.get("location")
+        TOs_updated: list[tuple[dict, float]] = [(TO, float(1)) for TO, multiplier in TOs if TO.get("location") is not None and TO.get("location") == FROM_location]
+        
+        if len(TOs_updated) > 0 and len(TOs) > 1:
+            TOs: list[tuple[dict, float]] = TOs_updated
+            counter += 1
+    
+    # Print the amount of exchanges where the TOs were adapted since they matched with the FROM location
+    print("{} exchanges were replaced with the same location".format(counter))
+    
+    # Initialize variables
+    _successful: list = []
+    successfully_migrated: list = []
+    unsuccessfully_migrated: list = []
+    
+    # Loop through each successfully linked activity and bring to a format to write a dataframe
+    for FROM, TOs, linking_method in successful:
+        _successful += [FROM]
+        FROM_dict: dict = {"FROM_" + k: v for k, v in FROM.items()}
+        
+        for TO, multiplier in TOs:
+            TO_dict: dict = {"TO_" + m: TO[m] for m in TO_fields if m in TO}            
+            successfully_migrated += [{"database": db_name, **FROM_dict, "multiplier": multiplier, **TO_dict, "linking_method": linking_method}]    
+    
+    # Loop through each unsuccessfully linked activity and bring to a format to write a dataframe
+    for unsuccessful_query in unsuccessful:
+        unsuccessful_data: dict = unsuccessful_query.data
+        
+        if unsuccessful_data not in _successful:
+            unsuccessfully_migrated += [{"database": db_name, **{"FROM_" + k: v for k, v in unsuccessful_data.items()}}]
+
+    return successful, successfully_migrated, unsuccessfully_migrated
+
+
+def convert_to_JSON_migration_format(successful: tuple[dict, list, str]) -> dict:
+    
+    # Initialize variables
+    fields: tuple[str] = ("name", "unit", "location")
+    data: list = []
+    
+    # Loop through each successfully linked activity and bring to the valid migration format
+    for FROM, TOs, linking_method in successful:
+        FROM_tuple: tuple = tuple([FROM[m] for m in fields])
+        
+        TOs_prepared: list = []
+        for TO, multiplier in TOs:
+            TO_filtered: dict = {m: TO[m] for m in TO_fields if m in TO}            
+            TOs_prepared += [(TO_filtered, multiplier)]
+        
+        data += [(FROM_tuple, TOs_prepared)]
+        
+    # Merge to a valid migration dictionary
+    return {"fields": fields, "data": data}
+
+
+#%% Create the Agribalyse background activity migration --> all ecoinvent v3.9.1 found in the background from Agribalyse should be updated to ecoinvent v3.12, if possible
 agribalyse_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(agribalyse_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
 
-# Load dataframe with manually checked activity flows
-manually_checked_SBERT_activity_names: pd.DataFrame = pd.read_excel(LCI_ecoinvent_xml_folderpath / filename_SBERT_activity_names_validated)
+# Initialize the activity harmonization class
+agribalyse_ah: ActivityHarmonization = copy.deepcopy(ah)
 
-AGB_background_ei_migration: dict = create_harmonized_activity_migration(flows_1 = list(agribalyse_exchanges_to_migrate_to_ecoinvent.values()),
-                                                                         flows_2 = list(bw2data.Database(ecoinvent_db_name_xml_migrated)),
-                                                                         # manually_checked_SBERTs = manually_checked_SBERT_activity_names,
-                                                                         manually_checked_SBERTs = None,
-                                                                         ecoinvent_correspondence_mapping = correspondence_mapping)
+# Specify the from and to version for the correspondence mapping to be applied to the agribalyse database
+agribalyse_correspondence_from_version: tuple[int, int] = (3, 9, 1)
+agribalyse_correspondence_to_version: tuple[int, int] = (3, 12)
 
-# SBERT to map for activities
-unsuccessfully_migrated += [{**{"FROM_" + k: v for k, v in m.items()}, **{"Database": agribalyse_db_name_updated_simapro}} for m, _ in AGB_background_ei_migration["unsuccessfully_migrated_activity_flows"]]
-successfully_migrated += [{**{"FROM_" + k: v for k, v in m.items()}, **{"TO_" + k: v for k, v in n.items()}, **{"Database": agribalyse_db_name_updated_simapro}} for m, n in AGB_background_ei_migration["successfully_migrated_activity_flows"]]
-SBERT_to_map += [{**m, **{"Database": agribalyse_db_name_updated_simapro}} for m in AGB_background_ei_migration["SBERT_to_map"]]
+# Add the correspondence mappings to the harmonization object
+add_correspondence_mappings(activity_harmonization_obj = agribalyse_ah,
+                            correspondence_obj = correspondence_obj,
+                            FROM_version = agribalyse_correspondence_from_version,
+                            TO_version = agribalyse_correspondence_to_version)
+
+
+# Load dataframe with custom migration
+agribalyse_custom_migration_df: pd.DataFrame = pd.read_excel(LCI_ecoinvent_xml_folderpath / filename_agribalyse_custom_mapping_harmonization)
+
+# Add the custom mappings to the harmonization object
+add_custom_mappings(activity_harmonization_obj = agribalyse_ah,
+                    custom_mapping_df = agribalyse_custom_migration_df)
+
+# Find updates
+agribalyse_successful, agribalyse_successful_for_df, agribalyse_unsuccessful_for_df = map_activities(db_name = agribalyse_db_name_updated_simapro,
+                                                                                                     exchanges_to_migrate = agribalyse_exchanges_to_migrate_to_ecoinvent,
+                                                                                                     activity_harmonization_obj = agribalyse_ah)
+successfully_migrated += agribalyse_successful_for_df
+unsuccessfully_migrated += agribalyse_unsuccessful_for_df
+
+# Bring to valid migration format
+AGB_background_ei_migration: dict = convert_to_JSON_migration_format(successful = agribalyse_successful)
 
 # Create the JSON object to be written
-AGB_background_ei_migration_in_json_format = json.dumps(AGB_background_ei_migration["activity_migration"], indent = 3)
+AGB_background_ei_migration_in_json_format = json.dumps(AGB_background_ei_migration, indent = 3)
 
 # Write the activity dictionary to a JSON file
 with open(filepath_AGB_background_ei_migration_data, "w") as outfile:
@@ -1015,25 +1238,41 @@ if agribalyse_db_name_updated_simapro in bw2data.databases:
 
 
 
-#%% Create the WFDLB background activity migration --> all ecoinvent v3.5 found in the background from WFLDB should be updated to ecoinvent v3.10, if possible
+#%% Create the WFDLB background activity migration --> all ecoinvent v3.5 found in the background from WFLDB should be updated to ecoinvent v3.12, if possible
 wfldb_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(wfldb_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
 
-# Load dataframe with manually checked activity flows
-manually_checked_SBERT_activity_names: pd.DataFrame = pd.read_excel(LCI_ecoinvent_xml_folderpath / filename_SBERT_activity_names_validated)
+# Initialize the activity harmonization class
+wfldb_ah: ActivityHarmonization = copy.deepcopy(ah)
 
-WFLDB_background_ei_migration: dict = create_harmonized_activity_migration(flows_1 = list(wfldb_exchanges_to_migrate_to_ecoinvent.values()),
-                                                                           flows_2 = list(bw2data.Database(ecoinvent_db_name_xml_migrated)),
-                                                                           # manually_checked_SBERTs = manually_checked_SBERT_activity_names,
-                                                                           manually_checked_SBERTs = None,
-                                                                           ecoinvent_correspondence_mapping = correspondence_mapping)
+# Specify the from and to version for the correspondence mapping to be applied to the wfldb database
+wfldb_correspondence_from_version: tuple[int, int] = (3, 5)
+wfldb_correspondence_to_version: tuple[int, int] = (3, 12)
 
-# SBERT to map for activities
-unsuccessfully_migrated += [{**{"FROM_" + k: v for k, v in m.items()}, **{"Database": wfldb_db_name_updated_simapro}} for m, _ in WFLDB_background_ei_migration["unsuccessfully_migrated_activity_flows"]]
-successfully_migrated += [{**{"FROM_" + k: v for k, v in m.items()}, **{"TO_" + k: v for k, v in n.items()}, **{"Database": wfldb_db_name_updated_simapro}} for m, n in WFLDB_background_ei_migration["successfully_migrated_activity_flows"]]
-SBERT_to_map += [{**m, **{"Database": wfldb_db_name_updated_simapro}} for m in WFLDB_background_ei_migration["SBERT_to_map"]]
+# Add the correspondence mappings to the harmonization object
+add_correspondence_mappings(activity_harmonization_obj = wfldb_ah,
+                            correspondence_obj = correspondence_obj,
+                            FROM_version = wfldb_correspondence_from_version,
+                            TO_version = wfldb_correspondence_to_version)
+
+# Load dataframe with custom migration
+wfldb_custom_migration_df: pd.DataFrame = pd.read_excel(LCI_ecoinvent_xml_folderpath / filename_wfldb_custom_mapping_harmonization)
+
+# Add the custom mappings to the harmonization object
+add_custom_mappings(activity_harmonization_obj = wfldb_ah,
+                    custom_mapping_df = wfldb_custom_migration_df)
+
+# Find updates
+wfldb_successful, wfldb_successful_for_df, wfldb_unsuccessful_for_df = map_activities(db_name = wfldb_db_name_updated_simapro,
+                                                                                      exchanges_to_migrate = wfldb_exchanges_to_migrate_to_ecoinvent,
+                                                                                      activity_harmonization_obj = wfldb_ah)
+successfully_migrated += wfldb_successful_for_df
+unsuccessfully_migrated += wfldb_unsuccessful_for_df
+
+# Bring to valid migration format
+WFLDB_background_ei_migration: dict = convert_to_JSON_migration_format(successful = wfldb_successful)
 
 # Create the JSON object to be written
-WFLDB_background_ei_migration_in_json_format = json.dumps(WFLDB_background_ei_migration["activity_migration"], indent = 3)
+WFLDB_background_ei_migration_in_json_format = json.dumps(WFLDB_background_ei_migration, indent = 3)
 
 # Write the activity dictionary to a JSON file
 with open(filepath_WFLDB_background_ei_migration_data, "w") as outfile:
@@ -1105,25 +1344,41 @@ if wfldb_db_name_updated_simapro in bw2data.databases:
 
 
 
-#%% Create the SALCA background activity migration --> all ecoinvent v3.10 found in the background from SALCA should be updated to ecoinvent v3.10 from XML, if possible
+#%% Create the SALCA background activity migration --> all ecoinvent v3.10 found in the background from SALCA should be updated to ecoinvent v3.12 from XML, if possible
 salca_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(salca_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
 
-# Load dataframe with manually checked activity flows
-manually_checked_SBERT_activity_names: pd.DataFrame = pd.read_excel(LCI_ecoinvent_xml_folderpath / filename_SBERT_activity_names_validated)
+# Initialize the activity harmonization class
+salca_ah: ActivityHarmonization = copy.deepcopy(ah)
 
-SALCA_background_ei_migration: dict = create_harmonized_activity_migration(flows_1 = list(salca_exchanges_to_migrate_to_ecoinvent.values()),
-                                                                           flows_2 = list(bw2data.Database(ecoinvent_db_name_xml_migrated)),
-                                                                           # manually_checked_SBERTs = manually_checked_SBERT_activity_names,
-                                                                           manually_checked_SBERTs = None,
-                                                                           ecoinvent_correspondence_mapping = correspondence_mapping)
+# Specify the from and to version for the correspondence mapping to be applied to the salca database
+salca_correspondence_from_version: tuple[int, int] = (3, 10)
+salca_correspondence_to_version: tuple[int, int] = (3, 12)
 
-# SBERT to map for activities
-unsuccessfully_migrated += [{**{"FROM_" + k: v for k, v in m.items()}, **{"Database": salca_db_name_updated_simapro}} for m, _ in SALCA_background_ei_migration["unsuccessfully_migrated_activity_flows"]]
-successfully_migrated += [{**{"FROM_" + k: v for k, v in m.items()}, **{"TO_" + k: v for k, v in n.items()}, **{"Database": salca_db_name_updated_simapro}} for m, n in SALCA_background_ei_migration["successfully_migrated_activity_flows"]]
-SBERT_to_map += [{**m, **{"Database": salca_db_name_updated_simapro}} for m in SALCA_background_ei_migration["SBERT_to_map"]]
+# Add the correspondence mappings to the harmonization object
+add_correspondence_mappings(activity_harmonization_obj = salca_ah,
+                            correspondence_obj = correspondence_obj,
+                            FROM_version = salca_correspondence_from_version,
+                            TO_version = salca_correspondence_to_version)
+
+# Load dataframe with custom migration
+salca_custom_migration_df: pd.DataFrame = pd.read_excel(LCI_ecoinvent_xml_folderpath / filename_salca_custom_mapping_harmonization)
+
+# Add the custom mappings to the harmonization object
+add_custom_mappings(activity_harmonization_obj = salca_ah,
+                    custom_mapping_df = salca_custom_migration_df)
+
+# Find updates
+salca_successful, salca_successful_for_df, salca_unsuccessful_for_df = map_activities(db_name = salca_db_name_updated_simapro,
+                                                                                      exchanges_to_migrate = salca_exchanges_to_migrate_to_ecoinvent,
+                                                                                      activity_harmonization_obj = salca_ah)
+successfully_migrated += salca_successful_for_df
+unsuccessfully_migrated += salca_unsuccessful_for_df
+
+# Bring to valid migration format
+SALCA_background_ei_migration: dict = convert_to_JSON_migration_format(successful = salca_successful)
 
 # Create the JSON object to be written
-SALCA_background_ei_migration_in_json_format = json.dumps(SALCA_background_ei_migration["activity_migration"], indent = 3)
+SALCA_background_ei_migration_in_json_format = json.dumps(SALCA_background_ei_migration, indent = 3)
 
 # Write the activity dictionary to a JSON file
 with open(filepath_SALCA_background_ei_migration_data, "w") as outfile:
@@ -1194,128 +1449,48 @@ if salca_db_name_updated_simapro in bw2data.databases:
 
 
 
-#%% Create the Agrifootprint activity migration --> all ecoinvent v3.8 found in the background from AgriFootprint should be updated to ecoinvent v3.10, if possible
+
+#%% Create the Agrifootprint activity migration --> all ecoinvent v3.8 found in the background from AgriFootprint should be updated to ecoinvent v3.12, if possible
 agrifootprint_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(agrifootprint_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
 
 # Initialize the activity harmonization class
 agrifootprint_ah: ActivityHarmonization = copy.deepcopy(ah)
 
 # Specify the from and to version for the correspondence mapping to be applied to the agrifootprint database
-agrifootprint_correspondence_from_version: tuple[int, int] = (3, 8)
+agrifootprint_correspondence_from_version_1: tuple[int, int] = (3, 8)
+agrifootprint_correspondence_from_version_2: tuple[int, int] = (3, 6)
 agrifootprint_correspondence_to_version: tuple[int, int] = (3, 12)
-agrifootprint_correspondence_from_to_version: tuple[tuple[int, int], tuple[int, int]] = (agrifootprint_correspondence_from_version, agrifootprint_correspondence_to_version)
 
-# Interlink correspondence files
-correspondence_obj.interlink_correspondence_files(agrifootprint_correspondence_from_to_version)
-ecoinvent_correspondence_for_agrifootprint: pd.DataFrame = correspondence_obj.df_interlinked_data[agrifootprint_correspondence_from_to_version]
-ecoinvent_correspondence_for_agrifootprint.to_excel(output_path / "interlinked_correspondence_files_{}_{}.xlsx".format("_".join(agrifootprint_correspondence_from_version), "_".join(agrifootprint_correspondence_to_version)))
+# Add the correspondence mappings to the harmonization object
+add_correspondence_mappings(activity_harmonization_obj = agrifootprint_ah,
+                            correspondence_obj = correspondence_obj,
+                            FROM_version = agrifootprint_correspondence_from_version_1,
+                            TO_version = agrifootprint_correspondence_to_version)
 
-# Add correspondence mappings to activity harmonization class
-for idx, row in ecoinvent_correspondence_for_agrifootprint.iterrows():
-    
-    source: ActivityDefinition = ActivityDefinition(activity_code = row["FROM_activity_uuid"],
-                                                    reference_product_code = row["FROM_reference_product_uuid"],
-                                                    activity_name = row["FROM_activity_name"],
-                                                    reference_product_name = row["FROM_reference_product_name"],
-                                                    name = None,
-                                                    simapro_name = None,
-                                                    location = row["FROM_location"],
-                                                    unit = row["FROM_unit"]
-                                                    )
-    
-    target: ActivityDefinition = ActivityDefinition(activity_code = row["TO_activity_uuid"],
-                                                    reference_product_code = row["TO_reference_product_uuid"],
-                                                    activity_name = row["TO_activity_name"],
-                                                    reference_product_name = row["TO_reference_product_name"],
-                                                    name = None,
-                                                    simapro_name = None,
-                                                    location = row["TO_location"],
-                                                    unit = row["TO_unit"]
-                                                    )
-    
-    agrifootprint_ah.add_to_correspondence_mapping(source = source,
-                                                   target = target,
-                                                   multiplier = row.get("Multiplier")
-                                                   )
+add_correspondence_mappings(activity_harmonization_obj = agrifootprint_ah,
+                            correspondence_obj = correspondence_obj,
+                            FROM_version = agrifootprint_correspondence_from_version_2,
+                            TO_version = agrifootprint_correspondence_to_version)
 
 # Load dataframe with custom migration
-agrifootprint_custom_migration_df: pd.DataFrame = pd.read_excel(LCI_ecoinvent_xml_folderpath / filename_SBERT_activity_names_validated)
+agrifootprint_custom_migration_df: pd.DataFrame = pd.read_excel(LCI_ecoinvent_xml_folderpath / filename_agrifootprint_custom_mapping_harmonization)
 
-# Add custom mappings to activity harmonization class
-for idx, row in agrifootprint_custom_migration_df.iterrows():
-    
-    source: ActivityDefinition = ActivityDefinition(activity_code = None,
-                                                    reference_product_code = None,
-                                                    activity_name = None,
-                                                    reference_product_name = None,
-                                                    name = row["FROM_name"],
-                                                    simapro_name = None,
-                                                    location = row["FROM_location"],
-                                                    unit = row["FROM_unit"]
-                                                    )
-    
-    target: ActivityDefinition = ActivityDefinition(activity_code = None,
-                                                    reference_product_code = None,
-                                                    activity_name = None,
-                                                    reference_product_name = None,
-                                                    name = row["TO_name"],
-                                                    simapro_name = None,
-                                                    location = row["TO_location"],
-                                                    unit = row["TO_unit"]
-                                                    )
-    
-    agrifootprint_ah.add_to_custom_mapping(source = source,
-                                           target = target,
-                                           multiplier = row.get("multiplier")
-                                           )
+# Add the custom mappings to the harmonization object
+add_custom_mappings(activity_harmonization_obj = agrifootprint_ah,
+                    custom_mapping_df = agrifootprint_custom_migration_df)
 
-direct_mapping: dict = agrifootprint_ah.direct_mapping
-custom_mapping: dict = agrifootprint_ah.custom_mapping
-correspondence_mapping: dict = agrifootprint_ah.correspondence_mapping
-sbert_mapping: dict = agrifootprint_ah.SBERT_mapping
-# !!!
+# Find updates
+agrifootprint_successful, agrifootprint_successful_for_df, agrifootprint_unsuccessful_for_df = map_activities(db_name = agrifootprint_db_name_updated_simapro,
+                                                                                                              exchanges_to_migrate = agrifootprint_exchanges_to_migrate_to_ecoinvent,
+                                                                                                              activity_harmonization_obj = agrifootprint_ah)
+successfully_migrated += agrifootprint_successful_for_df
+unsuccessfully_migrated += agrifootprint_unsuccessful_for_df
 
-agrifootprint_successful: tuple = ()
-agrifootprint_unsuccessful_queries: tuple = ()
-agrifootprint_unsuccessful: tuple = ()
-
-for _, exc in agrifootprint_exchanges_to_migrate_to_ecoinvent.items():
-    
-    query: ActivityDefinition = ActivityDefinition(activity_code = exc["activity_code"], 
-                                                   reference_product_code = exc["reference_product_code"], 
-                                                   activity_name = exc["activity_name"],
-                                                   reference_product_name = exc["reference_product_name"],
-                                                   name = exc["name"],
-                                                   simapro_name = exc["SimaPro_name"],
-                                                   location = exc["location"],
-                                                   unit = exc["unit"]
-                                                   )
-    
-    if agrifootprint_ah.map_directly(query = query) != ():
-        agrifootprint_successful += agrifootprint_ah.map_directly(query = query) + ("Direct mapping",)
-        
-    elif agrifootprint_ah.map_using_custom_mapping(query = query) != ():
-        agrifootprint_successful += agrifootprint_ah.map_using_custom_mapping(query = query) + ("Custom mapping",)
-    
-    elif agrifootprint_ah.map_using_correspondence_mapping(query = query) != ():
-        agrifootprint_successful += agrifootprint_ah.map_using_correspondence_mapping(query = query) + ("Correspondence mapping",)
-        
-    else:
-        agrifootprint_unsuccessful_queries += (query,)
-            
-print("{} ecoinvent background exchanges from {} migrated".format(len(agrifootprint_successful), agrifootprint_db_name_updated_simapro))
-
-if len(agrifootprint_unsuccessful_queries) > 0:
-    agrifootprint_ah.map_using_SBERT(queries = agrifootprint_unsuccessful_queries)
-    # agrifootprint_successful += agrifootprint_ah.map_using_correspondence_mapping(query = query) + ("Correspondence mapping",)
-
-for FROM, TOs, linking_method in agrifootprint_successful:
-    FROM_tuple: tuple = ...
-    FROM_dict: dict = 
-AGF_background_ei_migration: dict = ...
+# Bring to valid migration format
+AGF_background_ei_migration: dict = convert_to_JSON_migration_format(successful = agrifootprint_successful)
 
 # Create the JSON object to be written
-AGF_background_ei_migration_in_json_format = json.dumps(AGF_background_ei_migration["activity_migration"], indent = 3)
+AGF_background_ei_migration_in_json_format = json.dumps(AGF_background_ei_migration, indent = 3)
 
 # Write the activity dictionary to a JSON file
 with open(filepath_AGF_background_ei_migration_data, "w") as outfile:
@@ -1387,31 +1562,8 @@ if agrifootprint_db_name_updated_simapro in bw2data.databases:
 
 
 #%% Create migration tables
-cols_order: tuple[str] = ("Database",
-                          "FROM_type",
-                          "FROM_activity_code",
-                          "FROM_reference_product_code",
-                          "FROM_activity_name",
-                          "FROM_reference_product_name",
-                          "FROM_name",
-                          "FROM_SimaPro_name",
-                          "FROM_unit",
-                          "FROM_location",
-                          "TO_code",
-                          "TO_type",
-                          "TO_activity_code",
-                          "TO_reference_product_code",
-                          "TO_activity_name",
-                          "TO_reference_product_name",
-                          "TO_SimaPro_name",
-                          "TO_unit",
-                          "TO_location",
-                          "TO_multiplier"
-                          )
-
-pd.DataFrame([{n: m.get(n) for n in cols_order} for m in successfully_migrated]).to_excel(output_path / "background_ei_flows_successfully_migrated.xlsx")
-pd.DataFrame([{n: m.get(n) for n in cols_order} for m in unsuccessfully_migrated]).to_excel(output_path / "background_ei_flows_unsuccessfully_migrated.xlsx")
-pd.DataFrame(SBERT_to_map).to_excel(output_path / "background_ei_flows_SBERT_to_map.xlsx")
+pd.DataFrame(successfully_migrated).to_excel(output_path / "background_ei_flows_successfully_migrated.xlsx")
+pd.DataFrame(unsuccessfully_migrated).to_excel(output_path / "background_ei_flows_unsuccessfully_migrated.xlsx")
 
 #%% Run LCA calculation
 
@@ -1444,22 +1596,6 @@ ecoinvent_simapro_inventories: list = [m for m in bw2data.Database(ecoinvent_db_
 ecoinvent_xml_inventories: list = [m for m in bw2data.Database(ecoinvent_db_name_xml)]
 
 # Run LCA calculation
-# LCA_results_ecoinvent_simapro: dict[str, pd.DataFrame] = run_LCA(activities = ecoinvent_simapro_inventories,
-#                                                                  methods = simapro_methods,
-#                                                                  write_LCI_exchanges = False,
-#                                                                  write_LCI_exchanges_as_emissions = False,
-#                                                                  write_LCIA_impacts_of_activity_exchanges = False,
-#                                                                  write_LCIA_process_contribution = False,
-#                                                                  write_LCIA_emission_contribution = False,
-#                                                                  write_characterization_factors = False,
-#                                                                  cutoff_process = 0.001,
-#                                                                  cutoff_emission = 0.001,
-#                                                                  write_results_to_file = True,
-#                                                                  local_output_path = output_path,
-#                                                                  filename_without_ending = "ecoinvent_SimaPro",
-#                                                                  use_timestamp_in_filename = True,
-#                                                                  print_progress_bar = True)
-
 lca_ecoinvent_simapro: LCA_Calculation = LCA_Calculation(activities = ecoinvent_simapro_inventories,
                                                          methods = simapro_methods)
 lca_ecoinvent_simapro.calculate(calculate_LCIA_scores = True)
@@ -1470,22 +1606,6 @@ lca_ecoinvent_simapro.write_results(path = output_path,
                                     extended = True)
 
 # Run LCA calculation
-# LCA_results_ecoinvent_xml: dict[str, pd.DataFrame] = run_LCA(activities = ecoinvent_xml_inventories,
-#                                                              methods = ecoinvent_methods,
-#                                                              write_LCI_exchanges = False,
-#                                                              write_LCI_exchanges_as_emissions = False,
-#                                                              write_LCIA_impacts_of_activity_exchanges = False,
-#                                                              write_LCIA_process_contribution = False,
-#                                                              write_LCIA_emission_contribution = False,
-#                                                              write_characterization_factors = False,
-#                                                              cutoff_process = 0.001,
-#                                                              cutoff_emission = 0.001,
-#                                                              write_results_to_file = True,
-#                                                              local_output_path = output_path,
-#                                                              filename_without_ending = "ecoinvent_XML",
-#                                                              use_timestamp_in_filename = True,
-#                                                              print_progress_bar = True)
-
 lca_ecoinvent_xml: LCA_Calculation = LCA_Calculation(activities = ecoinvent_xml_inventories,
                                                      methods = ecoinvent_methods)
 lca_ecoinvent_xml.calculate(calculate_LCIA_scores = True)
@@ -1572,22 +1692,6 @@ agrifootprint_simapro_inventories: list = [m for m in bw2data.Database(agrifootp
 agrifootprint_updated_simapro_inventories: list = [m for m in bw2data.Database(agrifootprint_db_name_updated_simapro)]
 
 # Run LCA calculation
-# LCA_results_agribalyse_simapro: dict[str, pd.DataFrame] = run_LCA(activities = agribalyse_simapro_inventories,
-#                                                                   methods = simapro_methods,
-#                                                                   write_LCI_exchanges = False,
-#                                                                   write_LCI_exchanges_as_emissions = False,
-#                                                                   write_LCIA_impacts_of_activity_exchanges = False,
-#                                                                   write_LCIA_process_contribution = False,
-#                                                                   write_LCIA_emission_contribution = False,
-#                                                                   write_characterization_factors = False,
-#                                                                   cutoff_process = 0.001,
-#                                                                   cutoff_emission = 0.001,
-#                                                                   write_results_to_file = True,
-#                                                                   local_output_path = output_path,
-#                                                                   filename_without_ending = "agribalyse_SimaPro",
-#                                                                   use_timestamp_in_filename = True,
-#                                                                   print_progress_bar = True)
-
 lca_agribalyse_simapro: LCA_Calculation = LCA_Calculation(activities = agribalyse_simapro_inventories,
                                                           methods = simapro_methods)
 lca_agribalyse_simapro.calculate(calculate_LCIA_scores = True)
@@ -1595,154 +1699,42 @@ LCA_results_agribalyse_simapro: dict[str, pd.DataFrame] = lca_agribalyse_simapro
 
 
 # Run LCA calculation
-# LCA_results_agribalyse_updated_simapro: dict[str, pd.DataFrame] = run_LCA(activities = agribalyse_updated_simapro_inventories,
-#                                                                           methods = ecoinvent_methods,
-#                                                                           write_LCI_exchanges = False,
-#                                                                           write_LCI_exchanges_as_emissions = False,
-#                                                                           write_LCIA_impacts_of_activity_exchanges = False,
-#                                                                           write_LCIA_process_contribution = False,
-#                                                                           write_LCIA_emission_contribution = False,
-#                                                                           write_characterization_factors = False,
-#                                                                           cutoff_process = 0.001,
-#                                                                           cutoff_emission = 0.001,
-#                                                                           write_results_to_file = True,
-#                                                                           local_output_path = output_path,
-#                                                                           filename_without_ending = "agribalyse_updated_SimaPro",
-#                                                                           use_timestamp_in_filename = True,
-#                                                                           print_progress_bar = True)
-
 lca_agribalyse_updated_simapro: LCA_Calculation = LCA_Calculation(activities = agribalyse_updated_simapro_inventories,
                                                                   methods = simapro_methods)
 lca_agribalyse_updated_simapro.calculate(calculate_LCIA_scores = True)
 LCA_results_agribalyse_updated_simapro: dict[str, pd.DataFrame] = lca_agribalyse_updated_simapro.get_results(extended = True)
 
 # Run LCA calculation
-# LCA_results_wfldb_simapro: dict[str, pd.DataFrame] = run_LCA(activities = wfldb_simapro_inventories,
-#                                                              methods = simapro_methods,
-#                                                              write_LCI_exchanges = False,
-#                                                              write_LCI_exchanges_as_emissions = False,
-#                                                              write_LCIA_impacts_of_activity_exchanges = False,
-#                                                              write_LCIA_process_contribution = False,
-#                                                              write_LCIA_emission_contribution = False,
-#                                                              write_characterization_factors = False,
-#                                                              cutoff_process = 0.001,
-#                                                              cutoff_emission = 0.001,
-#                                                              write_results_to_file = True,
-#                                                              local_output_path = output_path,
-#                                                              filename_without_ending = "wfldb_SimaPro",
-#                                                              use_timestamp_in_filename = True,
-#                                                              print_progress_bar = True)
-
 lca_wfldb_simapro: LCA_Calculation = LCA_Calculation(activities = wfldb_simapro_inventories,
                                                      methods = simapro_methods)
 lca_wfldb_simapro.calculate(calculate_LCIA_scores = True)
 LCA_results_wfldb_simapro: dict[str, pd.DataFrame] = lca_wfldb_simapro.get_results(extended = True)
 
 # Run LCA calculation
-# LCA_results_wfldb_updated_simapro: dict[str, pd.DataFrame] = run_LCA(activities = wfldb_updated_simapro_inventories,
-#                                                                      methods = ecoinvent_methods,
-#                                                                      write_LCI_exchanges = False,
-#                                                                      write_LCI_exchanges_as_emissions = False,
-#                                                                      write_LCIA_impacts_of_activity_exchanges = False,
-#                                                                      write_LCIA_process_contribution = False,
-#                                                                      write_LCIA_emission_contribution = False,
-#                                                                      write_characterization_factors = False,
-#                                                                      cutoff_process = 0.001,
-#                                                                      cutoff_emission = 0.001,
-#                                                                      write_results_to_file = True,
-#                                                                      local_output_path = output_path,
-#                                                                      filename_without_ending = "wfldb_updated_SimaPro",
-#                                                                      use_timestamp_in_filename = True,
-#                                                                      print_progress_bar = True)
-
 lca_wfldb_updated_simapro: LCA_Calculation = LCA_Calculation(activities = wfldb_updated_simapro_inventories,
                                                              methods = simapro_methods)
 lca_wfldb_updated_simapro.calculate(calculate_LCIA_scores = True)
 LCA_results_wfldb_updated_simapro: dict[str, pd.DataFrame] = lca_wfldb_updated_simapro.get_results(extended = True)
 
 # Run LCA calculation
-# LCA_results_salca_simapro: dict[str, pd.DataFrame] = run_LCA(activities = salca_simapro_inventories,
-#                                                              methods = simapro_methods,
-#                                                              write_LCI_exchanges = False,
-#                                                              write_LCI_exchanges_as_emissions = False,
-#                                                              write_LCIA_impacts_of_activity_exchanges = False,
-#                                                              write_LCIA_process_contribution = False,
-#                                                              write_LCIA_emission_contribution = False,
-#                                                              write_characterization_factors = False,
-#                                                              cutoff_process = 0.001,
-#                                                              cutoff_emission = 0.001,
-#                                                              write_results_to_file = True,
-#                                                              local_output_path = output_path,
-#                                                              filename_without_ending = "salca_SimaPro",
-#                                                              use_timestamp_in_filename = True,
-#                                                              print_progress_bar = True)
-
 lca_salca_simapro: LCA_Calculation = LCA_Calculation(activities = salca_simapro_inventories,
                                                      methods = simapro_methods)
 lca_salca_simapro.calculate(calculate_LCIA_scores = True)
 LCA_results_salca_simapro: dict[str, pd.DataFrame] = lca_salca_simapro.get_results(extended = True)
 
 # Run LCA calculation
-# LCA_results_salca_updated_simapro: dict[str, pd.DataFrame] = run_LCA(activities = salca_updated_simapro_inventories,
-#                                                                      methods = ecoinvent_methods,
-#                                                                      write_LCI_exchanges = False,
-#                                                                      write_LCI_exchanges_as_emissions = False,
-#                                                                      write_LCIA_impacts_of_activity_exchanges = False,
-#                                                                      write_LCIA_process_contribution = False,
-#                                                                      write_LCIA_emission_contribution = False,
-#                                                                      write_characterization_factors = False,
-#                                                                      cutoff_process = 0.001,
-#                                                                      cutoff_emission = 0.001,
-#                                                                      write_results_to_file = True,
-#                                                                      local_output_path = output_path,
-#                                                                      filename_without_ending = "salca_updated_SimaPro",
-#                                                                      use_timestamp_in_filename = True,
-#                                                                      print_progress_bar = True)
-
 lca_salca_updated_simapro: LCA_Calculation = LCA_Calculation(activities = salca_updated_simapro_inventories,
                                                              methods = simapro_methods)
 lca_salca_updated_simapro.calculate(calculate_LCIA_scores = True)
 LCA_results_salca_updated_simapro: dict[str, pd.DataFrame] = lca_salca_updated_simapro.get_results(extended = True)
 
 # Run LCA calculation
-# LCA_results_agrifootprint_simapro: dict[str, pd.DataFrame] = run_LCA(activities = agrifootprint_simapro_inventories,
-#                                                              methods = simapro_methods,
-#                                                              write_LCI_exchanges = False,
-#                                                              write_LCI_exchanges_as_emissions = False,
-#                                                              write_LCIA_impacts_of_activity_exchanges = False,
-#                                                              write_LCIA_process_contribution = False,
-#                                                              write_LCIA_emission_contribution = False,
-#                                                              write_characterization_factors = False,
-#                                                              cutoff_process = 0.001,
-#                                                              cutoff_emission = 0.001,
-#                                                              write_results_to_file = True,
-#                                                              local_output_path = output_path,
-#                                                              filename_without_ending = "agrifootprint_SimaPro",
-#                                                              use_timestamp_in_filename = True,
-#                                                              print_progress_bar = True)
-
 lca_agrifootprint_simapro: LCA_Calculation = LCA_Calculation(activities = agrifootprint_simapro_inventories,
                                                      methods = simapro_methods)
 lca_agrifootprint_simapro.calculate(calculate_LCIA_scores = True)
 LCA_results_agrifootprint_simapro: dict[str, pd.DataFrame] = lca_agrifootprint_simapro.get_results(extended = True)
 
 # Run LCA calculation
-# LCA_results_agrifootprint_updated_simapro: dict[str, pd.DataFrame] = run_LCA(activities = agrifootprint_updated_simapro_inventories,
-#                                                                      methods = ecoinvent_methods,
-#                                                                      write_LCI_exchanges = False,
-#                                                                      write_LCI_exchanges_as_emissions = False,
-#                                                                      write_LCIA_impacts_of_activity_exchanges = False,
-#                                                                      write_LCIA_process_contribution = False,
-#                                                                      write_LCIA_emission_contribution = False,
-#                                                                      write_characterization_factors = False,
-#                                                                      cutoff_process = 0.001,
-#                                                                      cutoff_emission = 0.001,
-#                                                                      write_results_to_file = True,
-#                                                                      local_output_path = output_path,
-#                                                                      filename_without_ending = "agrifootprint_updated_SimaPro",
-#                                                                      use_timestamp_in_filename = True,
-#                                                                      print_progress_bar = True)
-
 lca_agrifootprint_updated_simapro: LCA_Calculation = LCA_Calculation(activities = agrifootprint_updated_simapro_inventories,
                                                                      methods = simapro_methods)
 lca_agrifootprint_updated_simapro.calculate(calculate_LCIA_scores = True)
@@ -1778,398 +1770,5 @@ water_use_cfs: list[dict] = lca_calculation.get_characterization_factors([water_
 water_use_cfs_df: pd.DataFrame = pd.DataFrame(water_use_cfs)
 water_use_cfs_df.to_excel(output_path / "water_use_cfs.xlsx")
 
-
-
-#%%
-files: list[tuple] = [# ("Correspondence-File-v3.1-v3.2.xlsx", (3, 1), (3, 2)),
-                      # ("Correspondence-File-v3.2-v3.3.xlsx", (3, 2), (3, 3)),
-                      # ("Correspondence-File-v3.3-v3.4.xlsx", (3, 3), (3, 4)),
-                      # ("Correspondence-File-v3.4-v3.5.xlsx", (3, 4), (3, 5)),
-                      # ("Correspondence-File-v3.5-v3.6.xlsx", (3, 5), (3, 6)),
-                      # ("Correspondence-File-v3.6-v3.7.1.xlsx", (3, 6), (3, 7, 1)),
-                      # ("Correspondence-File-v3.7.1-v3.8.xlsx", (3, 7, 1), (3, 8)),
-                      ("Correspondence-File-v3.8-v3.9.1.xlsx", (3, 8), (3, 9, 1)),
-                      # ("Correspondence-File-v3.8-v3.9.xlsx", (3, 8), (3, 9)),
-                      ("Correspondence-File-v3.9.1-v3.10.xlsx", (3, 9, 1), (3, 10)),
-                      ("Correspondence-File-v3.10.1-v3.11.xlsx", (3, 10, 1), (3, 11)),
-                      ("Correspondence-File-v3.10-v3.10.1.xlsx", (3, 10), (3, 10, 1)),
-                      ("Correspondence-File-v3.11-v3.12.xlsx", (3, 11), (3, 12)),
-                      ]
-
-correspondence: Correspondence = Correspondence(ecoinvent_model_type = "cutoff")
-
-for filename, FROM_version, TO_version in files:
-    correspondence.read_correspondence_dataframe(filepath_correspondence_excel = here.parent / "correspondence" / "data" / filename,
-                                                 FROM_version = FROM_version,
-                                                 TO_version = TO_version
-                                                 )
-
-# correspondence_raw_data: dict = correspondence.raw_data
-# correspondence_interlinked_data: dict = correspondence.df_interlinked_data
-correspondence.interlink_correspondence_files((3, 8), (3, 12))
-
-#%%
-
-df_interlinked_v38: pd.DataFrame = correspondence.df_interlinked_data[((3, 8), (3, 12))]
-correspondence_fields_v38, correspondence_mapping_v38 = create_structured_migration_dictionary_from_excel(df_interlinked_v38)
-
-#%%
-agrifootprint_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(agrifootprint_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
-
-
-#%%
-
-def create_activity_IDs(activity_code: (str | None),
-                        reference_product_code: (str | None),
-                        SimaPro_name: (str | None),
-                        activity_name: (str | None),
-                        reference_product_name: (str | None),
-                        location: (str | None),
-                        unit: (str | None),
-                        models: list,
-                        systems: list,
-                        ) -> list[tuple[(str | None)]]:
-    
-    
-    if not isinstance(activity_code, str):
-        activity_code = None
-        
-    if not isinstance(reference_product_code, str):
-        reference_product_code = None
-        
-    if not isinstance(SimaPro_name, str):
-        SimaPro_name = None
-        
-    if not isinstance(activity_name, str):
-        activity_name = None
-        
-    if not isinstance(reference_product_name, str):
-        reference_product_name = None
-    
-    if not isinstance(location, str):
-        location = None
-        
-    if not isinstance(unit, str):
-        unit = None
-    
-    # IDs are tuples of format
-    # ("activity_code", "reference_product_code", "SimaPro_name", "activity_name", "reference_product_name", "location", "unit")
-    IDs: list = []
-     
-    if SimaPro_name is not None and unit is not None:
-        IDs += [(None, None, SimaPro_name, None, None, None, unit)]
-    
-    if reference_product_name is not None and activity_name is not None and location is not None and unit is not None and models != [] and systems != []:
-        
-        for model in models:
-            
-            if not isinstance(model, str):
-                continue
-            
-            for system in systems:
-                
-                if not isinstance(system, str):
-                    continue
-            
-                created_SimaPro_name: (str | None) = "{} {{{}}}|{} | {}, {}".format(reference_product_name, location, activity_name, model, system)
-                IDs += [(None, None, created_SimaPro_name, None, None, None, unit)]
-    
-    if activity_name is None and reference_product_name is not None and location is not None and unit is not None:
-        IDs += [(None, None, None, None, reference_product_name, location, unit)]
-    
-    if activity_name is not None and reference_product_name is not None and location is not None and unit is not None:
-        IDs += [(None, None, None, activity_name, reference_product_name, location, unit)]
-        IDs += [(None, None, None, None, reference_product_name + " " + activity_name, location, unit)]
-        IDs += [(None, None, None, None, activity_name + " " + reference_product_name, location, unit)]
-    
-    if activity_code is not None and reference_product_code is not None:
-        IDs += [(activity_code, reference_product_code, None, None, None, None, None)]
-
-    return list(set(IDs))
-
-
-def find_activity(IDs: list[tuple], multiplier: (float | int), mapping: dict) -> list[tuple]:
-    
-    for ID in IDs:
-        found: (list[tuple] | None) = mapping.get(ID)
-        
-        if found is not None:
-            return [(m[0], m[1] * multiplier) for m in found]
-    
-    return []
-
-
-flows_1: list[dict] = copy.deepcopy(list(agrifootprint_exchanges_to_migrate_to_ecoinvent.values()))
-flows_2: list[dict] = activities_to_migrate_to
-df_custom_mapping: (pd.DataFrame | None) = None
-df_ecoinvent_correspondence_mapping: (pd.DataFrame | None) = ecoinvent_correspondence_v38_to_v312
-use_SBERT_for_mapping: bool = True
-
-models: list[str] = ["Cut-off", "Cut-Off", "cutoff"]
-systems: list[str] = ["U", "Unit", "S", "System"]
-
-direct_mapping: dict = {}
-custom_mapping: dict = {}
-correspondence_mapping: dict = {}
-SBERT_mapping: dict = {}
-
-# Loop through each of the activity that can be mapped to
-for act in flows_2:
-    
-    FROM_IDs: list[tuple] = create_activity_IDs(activity_code = act.get("activity_code"),
-                                                reference_product_code = act.get("reference_product_code"),
-                                                SimaPro_name = act.get("SimaPro_name"),
-                                                activity_name = act.get("activity_name"),
-                                                reference_product_name = act.get("reference_product_name"),
-                                                location = act.get("location"),
-                                                unit = act.get("unit"),
-                                                models = models,
-                                                systems = systems)
-    
-    for FROM_ID in FROM_IDs:
-        if direct_mapping.get(FROM_ID) is None:
-            direct_mapping[FROM_ID] = [(copy.deepcopy(act), 1)]
-
-# print(set([len(m) for _, m in direct_mapping.items()]))
-
-if isinstance(df_ecoinvent_correspondence_mapping, pd.DataFrame):
-    
-    direct_mapping_copied = copy.deepcopy(direct_mapping)
-    
-    for idx, row in df_ecoinvent_correspondence_mapping.iterrows():
-        TO_IDs: list[tuple] = create_activity_IDs(activity_code = row["TO_activity_uuid"],
-                                                  reference_product_code = row["TO_reference_product_uuid"],
-                                                  SimaPro_name = None,
-                                                  activity_name = row["TO_activity_name"],
-                                                  reference_product_name = row["TO_reference_product_name"],
-                                                  location = row["TO_location"],
-                                                  unit = row["TO_unit"],
-                                                  models = models,
-                                                  systems = systems)
-        
-        found: list[tuple] = find_activity(IDs = TO_IDs, multiplier = row["Multiplier"], mapping = direct_mapping_copied)
-        
-        if found != []:
-            FROM_IDs: list[tuple] = create_activity_IDs(activity_code = row["FROM_activity_uuid"],
-                                                        reference_product_code = row["FROM_reference_product_uuid"],
-                                                        SimaPro_name = None,
-                                                        activity_name = row["FROM_activity_name"],
-                                                        reference_product_name = row["FROM_reference_product_name"],
-                                                        location = row["FROM_location"],
-                                                        unit = row["FROM_unit"],
-                                                        models = models,
-                                                        systems = systems)
-        
-            for FROM_ID in FROM_IDs:
-                if correspondence_mapping.get(FROM_ID) is None:
-                    correspondence_mapping[FROM_ID]: list[tuple] = copy.deepcopy(found)
-                
-                else:
-                    correspondence_mapping[FROM_ID] += copy.deepcopy(found)
-                    
-    
-    # Check that all multipliers sum up to exactly 1
-    not_summing_to_1: list[tuple] = [str(k) + " --> " + str(sum([m for _, m in v])) for k, v in correspondence_mapping.items() if sum([m for _, m in v]) < 0.99 or sum([m for _, m in v]) > 1.01]
-    
-    if not_summing_to_1 != []:
-        print("\n - ".join(set(not_summing_to_1)))
-        raise ValueError()
-
-print(set([len(m) for _, m in correspondence_mapping.items()]))
-                    
-
-if isinstance(df_custom_mapping, pd.DataFrame):
-    
-    direct_mapping_copied = copy.deepcopy(direct_mapping)
-    
-    for idx, row in df_custom_mapping.iterrows():
-        TO_IDs: list[tuple] = create_activity_IDs(activity_code = row.get("TO_activity_uuid"),
-                                                  reference_product_code = row.get("TO_reference_product_uuid"),
-                                                  SimaPro_name = row.get("TO_SimaPro_name"),
-                                                  activity_name = row.get("TO_activity_name"),
-                                                  reference_product_name = row.get("TO_reference_product_name"),
-                                                  location = row.get("TO_location"),
-                                                  unit = row.get("TO_unit"),
-                                                  models = models,
-                                                  systems = systems)
-        
-        found: (list[tuple] | None) = find_activity(IDs = TO_IDs, multiplier = row.get("multiplier"), mapping = direct_mapping_copied)
-        
-        if found is not None:
-            FROM_IDs: list[tuple] = create_activity_IDs(activity_code = row.get("FROM_activity_uuid"),
-                                                        reference_product_code = row.get("FROM_reference_product_uuid"),
-                                                        SimaPro_name = row.get("FROM_SimaPro_name"),
-                                                        activity_name = row.get("FROM_activity_name"),
-                                                        reference_product_name = row.get("FROM_reference_product_name"),
-                                                        location = row.get("FROM_location"),
-                                                        unit = row.get("FROM_unit"),
-                                                        models = models,
-                                                        systems = systems)
-        
-            for FROM_ID in FROM_IDs:
-                if custom_mapping.get(FROM_ID) is None:
-                    custom_mapping[FROM_ID] = found
-                
-                else:
-                    custom_mapping[FROM_ID] += found
-
-
-if use_SBERT_for_mapping:
-    
-    best_n_SBERT: int = 5
-    SBERT_cutoff_for_inclusion: float = 0.95
-    keys_to_use_for_SBERT_mapping: tuple[str] = ("SimaPro_name", "unit")
-    
-    FROM_SBERTs: tuple = tuple(set([tuple([m.get(n) for n in keys_to_use_for_SBERT_mapping]) for m in flows_1]))
-    TO_SBERTs: tuple = tuple(set([tuple([m.get(n) for n in keys_to_use_for_SBERT_mapping]) for m in flows_2]))
-    
-    SBERTs = [(a, b) for a, b in zip(FROM_SBERTs, TO_SBERTs) if all([m is not None for m in a]) and all([n is not None for n in b])]
-    FROM_SBERTs_cleaned: tuple = tuple([m for m, _ in SBERTs])
-    TO_SBERTs_cleaned: tuple = tuple([m for _, m in SBERTs])
-    
-    # Map using SBERT
-    df_SBERT_mapping: pd.DataFrame = map_using_SBERT(FROM_SBERTs_cleaned, TO_SBERTs_cleaned, best_n_SBERT)    
-    
-    for idx, row in df_SBERT_mapping.iterrows():
-        
-        if row["ranking"] != best_n_SBERT and row["score"] < SBERT_cutoff_for_inclusion:
-            continue
-        
-        TO_IDs: list[tuple] = create_activity_IDs(activity_code = None,
-                                                  reference_product_code = None,
-                                                  SimaPro_name = row["mapped"][0],
-                                                  activity_name = None,
-                                                  reference_product_name = None,
-                                                  location = None,
-                                                  unit = row["mapped"][1],
-                                                  models = models,
-                                                  systems = systems)
-        
-        found: (list[tuple] | None) = find_activity(IDs = TO_IDs, multiplier = 1, mapping = direct_mapping)
-        
-        if found is not None:
-            
-            FROM_IDs: list[tuple] = create_activity_IDs(activity_code = None,
-                                                        reference_product_code = None,
-                                                        SimaPro_name = row["orig"][0],
-                                                        activity_name = None,
-                                                        reference_product_name = None,
-                                                        location = None,
-                                                        unit = row["orig"][1],
-                                                        models = models,
-                                                        systems = systems)
-            
-            for FROM_ID in FROM_IDs:
-                if SBERT_mapping.get(FROM_ID) is None:
-                    SBERT_mapping[FROM_ID] = found
-
-
-# Initialize a list to store migration data --> tuple of FROM and TO dicts
-successful_migration_data: list = []
-unsuccessful_migration_data: list = []
-
-# Loop through each flow
-# Check if it should be mapped
-# Map if possible
-for exc in flows_1:
-        
-    exc_SimaPro_name = exc.get("SimaPro_name")
-    exc_name = exc.get("name")
-    exc_unit = exc.get("unit")
-    exc_location = exc.get("location")
-    exc_activity_name = exc.get("activity_name")
-    exc_activity_code = exc.get("activity_code")
-    exc_reference_product_name = exc.get("reference_product_name")
-    exc_reference_product_code = exc.get("reference_product_code")
-    
-    if (exc_name, exc_location, exc_unit) in successful_migration_data:
-        continue
-    
-    FROM_IDs: list[tuple] = create_activity_IDs(activity_code = exc_activity_code,
-                                                reference_product_code = exc_reference_product_code,
-                                                SimaPro_name = exc_SimaPro_name,
-                                                activity_name = exc_activity_name,
-                                                reference_product_name = exc_reference_product_name,
-                                                location = exc_location,
-                                                unit = exc_unit,
-                                                models = models,
-                                                systems = systems)
-    
-    found_from_direct_mapping = find_activity(IDs = FROM_IDs, multiplier = 1, mapping = direct_mapping)
-    found_from_custom_mapping = find_activity(IDs = FROM_IDs, multiplier = 1, mapping = custom_mapping)
-    found_from_correspondence_mapping = find_activity(IDs = FROM_IDs, multiplier = 1, mapping = correspondence_mapping)
-    found_from_SBERT_mapping = find_activity(IDs = FROM_IDs, multiplier = 1, mapping = SBERT_mapping)
-    
-    if found_from_direct_mapping is not None:
-        successful_migration_data += [(exc, found_from_direct_mapping, "Direct mapping")]
-        
-    elif found_from_custom_mapping is not None:
-        successful_migration_data += [(exc, found_from_custom_mapping, "Custom mapping")]
-
-    elif found_from_correspondence_mapping is not None:
-        successful_migration_data += [(exc, found_from_correspondence_mapping, "Correspondence mapping")]
-        
-    elif found_from_SBERT_mapping is not None:
-        successful_migration_data += [(exc, found_from_SBERT_mapping, "SBERT mapping")]
-    
-    else:
-        unsuccessful_migration_data += [(exc, [], "Remains unmapped")]
-        
-# Specify the field from which we want to map
-FROM_fields: tuple = ("name", "unit", "location")
-    
-# Specify the fields to which should be mapped to
-TO_fields: tuple = ("code",
-                    "name",
-                    "SimaPro_name",
-                    "categories",
-                    # "top_category",
-                    # "sub_category",
-                    "SimaPro_categories",
-                    "unit",
-                    "SimaPro_unit",
-                    "location"
-                    )
-
-# Initialize empty migration dictionary
-successful_migration_dict: dict = {"fields": FROM_fields,
-                                   "data": {}}
-successful_migration_df: list = []
-unsuccessful_migration_df = [{**{"FROM_" + k: v for k, v in m.items()}, "Used_Mapping": used_mapping} for m, _, used_mapping in unsuccessful_migration_data]
-
-for FROM, TOs, used_mapping in successful_migration_data:
-    
-    FROM_tuple: tuple = tuple([FROM[m] for m in FROM_fields]) + ("technosphere",)
-    TO_list_of_dicts: list[dict] = []
-    
-    for TO, multiplier in TOs:
-        TO_dict: dict = {k: v for k, v in TO.items() if k in TO_fields}
-        TO_list_of_dicts += [{**TO_dict, "multiplier": multiplier}]
-    
-    if str(FROM_tuple) not in successful_migration_dict:
-        successful_migration_dict["data"][str(FROM_tuple)]: list = []
-        
-    successful_migration_dict["data"][str(FROM_tuple)] += TO_list_of_dicts
-
-    FROM_dict_for_df: dict = {"FROM_" + m: FROM[m] for m in FROM_fields}
-    TO_dicts_for_df: dict = [{("TO_" + k if k != "multiplier" else k): v for k, v in m.items()} for m in TO_list_of_dicts]
-    successful_migration_df += [{**FROM_dict_for_df, **m} for m in TO_dicts_for_df]
-    
-# Add 'type' key
-successful_migration_dict["fields"] += ("type",)
-
-# Statistic message for console
-statistic_msg: str = """    
-    A total of {} unique activity flows were detected that need to be linked:
-        - {} unique activity flows were successfully linked
-        - {} unique activity flows remain unlinked
-    """.format(len(successful_migration_data) + len(unsuccessful_migration_data), len(successful_migration_data), len(unsuccessful_migration_data))
-print(statistic_msg)
-    
-# Return
-return {"activity_migration": successful_migration_dict,
-        "successfully_migrated_activity_flows": pd.DataFrame(successful_migration_df),
-        "unsuccessfully_migrated_activity_flows": pd.DataFrame(unsuccessful_migration_df)
-        }
 
 

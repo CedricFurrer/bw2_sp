@@ -376,12 +376,22 @@ class Correspondence():
     def _data_to_long_list(self) -> None:
         
         # Return if no raw data was found
-        if self.raw_data == {} or hasattr(self, "all_data"):
+        if self.raw_data == {}:
+            self.all_data: list[dict] = []
             return
         
         # Write all data to a long list
         self.all_data: list[dict] = [{**{self.key_name_FROM_version: a},
                                       **e, **{self.key_name_TO_version: c}} for a, b in self.raw_data.items() for c, d in b.items() for _, e in d.items()]
+    
+    @property
+    def standardized_df(self) -> pd.DataFrame:
+        
+        # Write the all data attribute
+        self._data_to_long_list()
+        
+        # Return the dataframe
+        return pd.DataFrame(self.all_data)
     
     
     def interlink_correspondence_files(self,
@@ -512,6 +522,9 @@ class Correspondence():
             
             # Raise counter at the end
             counter += 1
+        
+        # Print empty line because end statement is ''
+        print()
         
         # Let's replace the NaN's with None's to better be able to work with!
         df_data: pd.DataFrame = df_data.copy().replace({float("NaN"): None})
