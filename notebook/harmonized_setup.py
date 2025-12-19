@@ -76,7 +76,7 @@ else:
     project_path: pathlib.Path = here / "Brightway2_projects"
     
 project_path.mkdir(exist_ok = True)
-project_name: str = "Brightway paper"
+project_name: str = "Brightway paper harm test"
 # project_name: str = "test"
 
 # Correspondence files
@@ -1007,8 +1007,8 @@ def add_custom_mappings(activity_harmonization_obj: ActivityHarmonization,
         # Create target activity definition
         target: ActivityDefinition = ActivityDefinition(activity_code = None,
                                                         reference_product_code = None,
-                                                        activity_name = None,
-                                                        reference_product_name = None,
+                                                        activity_name = row.get("TO_activity_name"),
+                                                        reference_product_name = row.get("TO_reference_product_name"),
                                                         name = row["TO_name"],
                                                         simapro_name = None,
                                                         location = row["TO_location"],
@@ -1133,20 +1133,40 @@ def convert_to_JSON_migration_format(successful: tuple[dict, list, str]) -> dict
 
 
 #%% Create the Agribalyse background activity migration --> all ecoinvent v3.9.1 found in the background from Agribalyse should be updated to ecoinvent v3.12, if possible
-agribalyse_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(agribalyse_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
+
+# We first extract all the IDs of the exchanges
+agribalyse_exchanges_to_migrate_to_ecoinvent_IDs: set[tuple] = {exc["input"] for ds in copy.deepcopy(list(agribalyse_db_updated_simapro)) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
+
+# If the inventory is actually one of the exchange that should be mapped, we can exclude the exchanges within that inventory
+agribalyse_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(agribalyse_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False) and (ds["database"], ds["code"]) not in agribalyse_exchanges_to_migrate_to_ecoinvent_IDs}
+# agribalyse_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(agribalyse_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
+
+# Load dataframe with custom migration
+agribalyse_delete_ref_prod_uuids_df: pd.DataFrame = pd.read_excel(LCI_ecoinvent_xml_folderpath / filename_agribalyse_custom_mapping_harmonization, sheet_name = "delete_reference_product_uuids")
+agribalyse_delete_ref_prod_uuids: list[tuple[str, str, str]] = [(m["name"], m["location"], m["unit"]) for idx, m in agribalyse_delete_ref_prod_uuids_df.iterrows()]
+
+# Some reference product uuids are incorrect. We remove them manually.
+for _, exc in agribalyse_exchanges_to_migrate_to_ecoinvent.items():
+    
+    # Set the reference product uuid to None if it is found in the df
+    if (exc["name"], exc["location"], exc["unit"]) in agribalyse_delete_ref_prod_uuids:
+        exc["reference_product_code"] = None
 
 # Initialize the activity harmonization class
 agribalyse_ah: ActivityHarmonization = copy.deepcopy(ah)
 
 # Specify the from and to version for the correspondence mapping to be applied to the agribalyse database
-agribalyse_correspondence_from_version: tuple[int, int] = (3, 9, 1)
+agribalyse_correspondence_from_versions: list[tuple[int, int]] = [(3, 9, 1), (3, 8), (3, 6), (3, 3)]
 agribalyse_correspondence_to_version: tuple[int, int] = (3, 12)
 
-# Add the correspondence mappings to the harmonization object
-add_correspondence_mappings(activity_harmonization_obj = agribalyse_ah,
-                            correspondence_obj = correspondence_obj,
-                            FROM_version = agribalyse_correspondence_from_version,
-                            TO_version = agribalyse_correspondence_to_version)
+# Loop through each correspondence version that should be used for mapping
+for agribalyse_correspondence_from_version in agribalyse_correspondence_from_versions:
+    
+    # Add the correspondence mappings to the harmonization object
+    add_correspondence_mappings(activity_harmonization_obj = agribalyse_ah,
+                                correspondence_obj = correspondence_obj,
+                                FROM_version = agribalyse_correspondence_from_version,
+                                TO_version = agribalyse_correspondence_to_version)
 
 
 # Load dataframe with custom migration
@@ -1176,7 +1196,7 @@ with open(filepath_AGB_background_ei_migration_data, "w") as outfile:
 # Free up memory
 del agribalyse_exchanges_to_migrate_to_ecoinvent, AGB_background_ei_migration, AGB_background_ei_migration_in_json_format
 
-#%% Update the ecoinvent background activities in the Agribalyse database from v3.8 to v3.10 and register database
+#%% Update the ecoinvent background activities in the Agribalyse database from v3.9.1 to v3.12 and register database
 agribalyse_db_updated_simapro.apply_strategy(partial(link.remove_linking,
                                                      production_exchanges = False,
                                                      substitution_exchanges = True,
@@ -1228,34 +1248,55 @@ if agribalyse_db_name_updated_simapro in bw2data.databases:
     print("\n-----------Delete database: " + agribalyse_db_name_updated_simapro)
     del bw2data.databases[agribalyse_db_name_updated_simapro]
 
-# # Write database
-# print("\n-----------Write database: " + agribalyse_db_name_updated_simapro)
-# agribalyse_db_updated_simapro.write_database(overwrite = False)
-# print()
+# Write database
+print("\n-----------Write database: " + agribalyse_db_name_updated_simapro)
+agribalyse_db_updated_simapro.write_database(overwrite = False)
+print()
 
-# # Free up memory
-# del agribalyse_db_updated_simapro
+# Free up memory
+del agribalyse_db_updated_simapro
 
 
 
 #%% Create the WFDLB background activity migration --> all ecoinvent v3.5 found in the background from WFLDB should be updated to ecoinvent v3.12, if possible
-wfldb_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(wfldb_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
+
+# We first extract all the IDs of the exchanges
+wfldb_exchanges_to_migrate_to_ecoinvent_IDs: set[tuple] = {exc["input"] for ds in copy.deepcopy(list(wfldb_db_updated_simapro)) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
+
+# If the inventory is actually one of the exchange that should be mapped, we can exclude the exchanges within that inventory
+wfldb_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(wfldb_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False) and (ds["database"], ds["code"]) not in wfldb_exchanges_to_migrate_to_ecoinvent_IDs}
+# wfldb_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(wfldb_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
+
+# Load dataframe with custom migration
+wfldb_delete_ref_prod_uuids_df: pd.DataFrame = pd.read_excel(LCI_ecoinvent_xml_folderpath / filename_wfldb_custom_mapping_harmonization, sheet_name = "delete_reference_product_uuids")
+wfldb_delete_ref_prod_uuids: list[tuple[str, str, str]] = [(m["name"], m["location"], m["unit"]) for idx, m in wfldb_delete_ref_prod_uuids_df.iterrows()]
+
+# Some reference product uuids are incorrect. We remove them manually.
+for _, exc in wfldb_exchanges_to_migrate_to_ecoinvent.items():
+    
+    # Set the reference product uuid to None if it is found in the df
+    if (exc["name"], exc["location"], exc["unit"]) in wfldb_delete_ref_prod_uuids:
+        exc["reference_product_code"] = None
 
 # Initialize the activity harmonization class
 wfldb_ah: ActivityHarmonization = copy.deepcopy(ah)
 
 # Specify the from and to version for the correspondence mapping to be applied to the wfldb database
-wfldb_correspondence_from_version: tuple[int, int] = (3, 5)
+wfldb_correspondence_from_versions: list[tuple[int, int]] = [(3, 5), (3, 11), (3, 10, 1), (3, 8), (3, 6), (3, 4)]
 wfldb_correspondence_to_version: tuple[int, int] = (3, 12)
 
-# Add the correspondence mappings to the harmonization object
-add_correspondence_mappings(activity_harmonization_obj = wfldb_ah,
-                            correspondence_obj = correspondence_obj,
-                            FROM_version = wfldb_correspondence_from_version,
-                            TO_version = wfldb_correspondence_to_version)
+# Loop through each correspondence version that should be used for mapping
+for wfldb_correspondence_from_version in wfldb_correspondence_from_versions:
+    
+    # Add the correspondence mappings to the harmonization object
+    add_correspondence_mappings(activity_harmonization_obj = wfldb_ah,
+                                correspondence_obj = correspondence_obj,
+                                FROM_version = wfldb_correspondence_from_version,
+                                TO_version = wfldb_correspondence_to_version)
+
 
 # Load dataframe with custom migration
-wfldb_custom_migration_df: pd.DataFrame = pd.read_excel(LCI_ecoinvent_xml_folderpath / filename_wfldb_custom_mapping_harmonization)
+wfldb_custom_migration_df: pd.DataFrame = pd.read_excel(LCI_ecoinvent_xml_folderpath / filename_wfldb_custom_mapping_harmonization, sheet_name = "custom_migration")
 
 # Add the custom mappings to the harmonization object
 add_custom_mappings(activity_harmonization_obj = wfldb_ah,
@@ -1282,7 +1323,7 @@ with open(filepath_WFLDB_background_ei_migration_data, "w") as outfile:
 del wfldb_exchanges_to_migrate_to_ecoinvent, WFLDB_background_ei_migration, WFLDB_background_ei_migration_in_json_format
 
 
-#%% Update the ecoinvent background activities in the World Food LCA database from v3.5 to v3.10 and register database
+#%% Update the ecoinvent background activities in the World Food LCA database from v3.5 to v3.12 and register database
 wfldb_db_updated_simapro.apply_strategy(partial(link.remove_linking,
                                                 production_exchanges = False,
                                                 substitution_exchanges = True,
@@ -1334,31 +1375,51 @@ if wfldb_db_name_updated_simapro in bw2data.databases:
     print("\n-----------Delete database: " + wfldb_db_name_updated_simapro)
     del bw2data.databases[wfldb_db_name_updated_simapro]
 
-# # Write database
-# print("\n-----------Write database: " + wfldb_db_name_updated_simapro)
-# wfldb_db_updated_simapro.write_database(overwrite = False)
-# print()
+# Write database
+print("\n-----------Write database: " + wfldb_db_name_updated_simapro)
+wfldb_db_updated_simapro.write_database(overwrite = False)
+print()
 
-# # Free up memory
-# del wfldb_db_updated_simapro
+# Free up memory
+del wfldb_db_updated_simapro
 
 
 
-#%% Create the SALCA background activity migration --> all ecoinvent v3.10 found in the background from SALCA should be updated to ecoinvent v3.12 from XML, if possible
-salca_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(salca_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
+#%% Create the SALCA background activity migration --> all ecoinvent v3.11 found in the background from SALCA should be updated to ecoinvent v3.12 from XML, if possible
+
+# We first extract all the IDs of the exchanges
+salca_exchanges_to_migrate_to_ecoinvent_IDs: set[tuple] = {exc["input"] for ds in copy.deepcopy(list(salca_db_updated_simapro)) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
+
+# If the inventory is actually one of the exchange that should be mapped, we can exclude the exchanges within that inventory
+salca_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(salca_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False) and (ds["database"], ds["code"]) not in salca_exchanges_to_migrate_to_ecoinvent_IDs}
+# salca_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(salca_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
+
+# Load dataframe
+salca_delete_ref_prod_uuids_df: pd.DataFrame = pd.read_excel(LCI_ecoinvent_xml_folderpath / filename_salca_custom_mapping_harmonization, sheet_name = "delete_reference_product_uuids")
+salca_delete_ref_prod_uuids: list[tuple[str, str, str]] = [(m["name"], m["location"], m["unit"]) for idx, m in salca_delete_ref_prod_uuids_df.iterrows()]
+
+# Some reference product uuids are incorrect. We remove them manually.
+for _, exc in salca_exchanges_to_migrate_to_ecoinvent.items():
+    
+    # Set the reference product uuid to None if it is found in the df
+    if (exc["name"], exc["location"], exc["unit"]) in salca_delete_ref_prod_uuids:
+        exc["reference_product_code"] = None
 
 # Initialize the activity harmonization class
 salca_ah: ActivityHarmonization = copy.deepcopy(ah)
 
 # Specify the from and to version for the correspondence mapping to be applied to the salca database
-salca_correspondence_from_version: tuple[int, int] = (3, 10)
+salca_correspondence_from_versions: list[tuple[int, int]] = [(3, 10), (3, 9, 1), (3, 8), (3, 6), (3, 5)]
 salca_correspondence_to_version: tuple[int, int] = (3, 12)
 
-# Add the correspondence mappings to the harmonization object
-add_correspondence_mappings(activity_harmonization_obj = salca_ah,
-                            correspondence_obj = correspondence_obj,
-                            FROM_version = salca_correspondence_from_version,
-                            TO_version = salca_correspondence_to_version)
+# Loop through each correspondence version that should be used for mapping
+for salca_correspondence_from_version in salca_correspondence_from_versions:
+    
+    # Add the correspondence mappings to the harmonization object
+    add_correspondence_mappings(activity_harmonization_obj = salca_ah,
+                                correspondence_obj = correspondence_obj,
+                                FROM_version = salca_correspondence_from_version,
+                                TO_version = salca_correspondence_to_version)
 
 # Load dataframe with custom migration
 salca_custom_migration_df: pd.DataFrame = pd.read_excel(LCI_ecoinvent_xml_folderpath / filename_salca_custom_mapping_harmonization)
@@ -1387,7 +1448,7 @@ with open(filepath_SALCA_background_ei_migration_data, "w") as outfile:
 # Free up memory
 del salca_exchanges_to_migrate_to_ecoinvent, SALCA_background_ei_migration, SALCA_background_ei_migration_in_json_format
 
-#%% Update the ecoinvent background activities in the SALCA database from v3.10 to v3.10 (XML) and register database
+#%% Update the ecoinvent background activities in the SALCA database from v3.11 to v3.12 (XML) and register database
 salca_db_updated_simapro.apply_strategy(partial(link.remove_linking,
                                                 production_exchanges = False,
                                                 substitution_exchanges = True,
@@ -1439,38 +1500,41 @@ if salca_db_name_updated_simapro in bw2data.databases:
     print("\n-----------Delete database: " + salca_db_name_updated_simapro)
     del bw2data.databases[salca_db_name_updated_simapro]
     
-# # Write database
-# print("\n-----------Write database: " + salca_db_name_updated_simapro)
-# salca_db_updated_simapro.write_database(overwrite = False)
-# print()
+# Write database
+print("\n-----------Write database: " + salca_db_name_updated_simapro)
+salca_db_updated_simapro.write_database(overwrite = False)
+print()
 
-# # Free up memory
-# del salca_db_updated_simapro
+# Free up memory
+del salca_db_updated_simapro
 
 
 
 
 #%% Create the Agrifootprint activity migration --> all ecoinvent v3.8 found in the background from AgriFootprint should be updated to ecoinvent v3.12, if possible
-agrifootprint_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(agrifootprint_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
+
+# We first extract all the IDs of the exchanges
+agrifootprint_exchanges_to_migrate_to_ecoinvent_IDs: set[tuple] = {exc["input"] for ds in copy.deepcopy(list(agrifootprint_db_updated_simapro)) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
+
+# If the inventory is actually one of the exchange that should be mapped, we can exclude the exchanges within that inventory
+agrifootprint_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(agrifootprint_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False) and (ds["database"], ds["code"]) not in agrifootprint_exchanges_to_migrate_to_ecoinvent_IDs}
+# agrifootprint_exchanges_to_migrate_to_ecoinvent: dict = {(exc["name"], exc["unit"], exc["location"]): exc for ds in list(agrifootprint_db_updated_simapro) for exc in ds["exchanges"] if exc["type"] not in ["production", "biosphere"] and exc.get("is_ecoinvent", False)}
 
 # Initialize the activity harmonization class
 agrifootprint_ah: ActivityHarmonization = copy.deepcopy(ah)
 
 # Specify the from and to version for the correspondence mapping to be applied to the agrifootprint database
-agrifootprint_correspondence_from_version_1: tuple[int, int] = (3, 8)
-agrifootprint_correspondence_from_version_2: tuple[int, int] = (3, 6)
+agrifootprint_correspondence_from_versions: list[tuple[int, int]] = [(3, 8), (3, 6)]
 agrifootprint_correspondence_to_version: tuple[int, int] = (3, 12)
 
-# Add the correspondence mappings to the harmonization object
-add_correspondence_mappings(activity_harmonization_obj = agrifootprint_ah,
-                            correspondence_obj = correspondence_obj,
-                            FROM_version = agrifootprint_correspondence_from_version_1,
-                            TO_version = agrifootprint_correspondence_to_version)
-
-add_correspondence_mappings(activity_harmonization_obj = agrifootprint_ah,
-                            correspondence_obj = correspondence_obj,
-                            FROM_version = agrifootprint_correspondence_from_version_2,
-                            TO_version = agrifootprint_correspondence_to_version)
+# Loop through each correspondence version that should be used for mapping
+for agrifootprint_correspondence_from_version in agrifootprint_correspondence_from_versions:
+    
+    # Add the correspondence mappings to the harmonization object
+    add_correspondence_mappings(activity_harmonization_obj = agrifootprint_ah,
+                                correspondence_obj = correspondence_obj,
+                                FROM_version = agrifootprint_correspondence_from_version,
+                                TO_version = agrifootprint_correspondence_to_version)
 
 # Load dataframe with custom migration
 agrifootprint_custom_migration_df: pd.DataFrame = pd.read_excel(LCI_ecoinvent_xml_folderpath / filename_agrifootprint_custom_mapping_harmonization)
@@ -1500,7 +1564,7 @@ with open(filepath_AGF_background_ei_migration_data, "w") as outfile:
 del agrifootprint_exchanges_to_migrate_to_ecoinvent, AGF_background_ei_migration, AGF_background_ei_migration_in_json_format
 
 
-#%% Update the ecoinvent background activities in the AgriFootprint database from v3.8 to v3.10 and register database
+#%% Update the ecoinvent background activities in the AgriFootprint database from v3.8 to v3.12 and register database
 agrifootprint_db_updated_simapro.apply_strategy(partial(link.remove_linking,
                                                         production_exchanges = False,
                                                         substitution_exchanges = True,
@@ -1552,13 +1616,13 @@ if agrifootprint_db_name_updated_simapro in bw2data.databases:
     print("\n-----------Delete database: " + agrifootprint_db_name_updated_simapro)
     del bw2data.databases[agrifootprint_db_name_updated_simapro]
 
-# # Write database
-# print("\n-----------Write database: " + agrifootprint_db_name_updated_simapro)
-# agrifootprint_db_updated_simapro.write_database(overwrite = False)
-# print()
+# Write database
+print("\n-----------Write database: " + agrifootprint_db_name_updated_simapro)
+agrifootprint_db_updated_simapro.write_database(overwrite = False)
+print()
 
-# # Free up memory
-# del agrifootprint_db_updated_simapro
+# Free up memory
+del agrifootprint_db_updated_simapro
 
 
 #%% Create migration tables
