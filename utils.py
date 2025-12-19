@@ -302,8 +302,12 @@ def add_unlinked_flows_to_biosphere_database(db: bw2io.importers.base_lci.LCIImp
         # Add the new data to the existing data
         db_unlinked.data += [{**m, "database": biosphere_db_name_unlinked} for m in unlinked_biosphere_flows_adapted]
         
+        # Delete first if already existing
+        if biosphere_db_name_unlinked in bw2data.databases:
+            del bw2data.databases[biosphere_db_name_unlinked]
+        
         # Write the database
-        db_unlinked.write_database(delete_existing = True)
+        db_unlinked.write_database()
     
     else:
         # Loop through each flow to create newly and add to database
