@@ -195,6 +195,9 @@ def link_biosphere_flows_externally(db_var,
 
 
 # Externally means, inventories and flows are linked with data from other already registered databases
+# In case of duplicates across background databases within the componenet of the linked_fields, 
+# the order in which you link the db_var to the background database (parameter link_to_datbases) decides which exchange is linked to the product
+# Therefore, modifying the linked fields to add "database" for example can allow the person to link to the correct exchange 
 def link_activities_externally(db_var,
                                link_to_databases: tuple,
                                link_production_exchanges: bool,
@@ -204,6 +207,7 @@ def link_activities_externally(db_var,
                                case_insensitive: bool,
                                strip: bool,
                                remove_special_characters: bool,
+                               linked_fields: tuple = ("name", "unit", "location"),
                                verbose: bool = True):
     
     # Make variable check
@@ -249,7 +253,7 @@ def link_activities_externally(db_var,
         # Use Brightway specific linking function to do the linking
         db_var = bw2io.utils.ExchangeLinker.link_iterable_by_fields(db_var,
                                                                     other = (m for m in bw2data.Database(db_name)),
-                                                                    fields = ("name", "unit", "location"),
+                                                                    fields = linked_fields,
                                                                     internal = False,
                                                                     kind = kinds,
                                                                     relink = relink)
