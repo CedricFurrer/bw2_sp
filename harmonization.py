@@ -39,15 +39,17 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
     for idx, row in df_SBERT_mapping.iterrows():
         
         if row["ranking"] == 3 and row["score"] >= 0.98:
+            FROM = (row["orig"], None, None)
+            TO = (row["mapped"], None, None)
             
-            if row["orig"] not in SBERT_mapping_dict_1:
-                SBERT_mapping_dict_1[row["orig"]]: dict = {}
+            if FROM not in SBERT_mapping_dict_1:
+                SBERT_mapping_dict_1[FROM]: tuple = ()
             
-            if row["mapped"] not in SBERT_mapping_dict_1:
-                SBERT_mapping_dict_1[row["mapped"]]: dict = {}
+            if TO not in SBERT_mapping_dict_1:
+                SBERT_mapping_dict_1[TO]: tuple = ()
             
-            SBERT_mapping_dict_1[row["orig"]][row["mapped"]]: float = float(1)
-            SBERT_mapping_dict_1[row["mapped"]][row["orig"]]: float = float(1)
+            SBERT_mapping_dict_1[FROM] += (TO + (float(1),),)
+            SBERT_mapping_dict_1[TO] = (FROM + (float(1),),)
             
         if row["orig"] not in SBERT_mapping_dict_3:
             SBERT_mapping_dict_3[row["orig"]]: dict = {}
@@ -64,20 +66,29 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
     SBERT_mapping: dict = SBERT_mapping_dict_1
     for m in manually_checked_SBERTs:
         
-        if m.get("orig") is not None and m.get("mapped") is not None and m.get("multiplier") is not None:
+        FROM_name = m["FROM_name"]
+        TO_name = m["TO_name"]
+        FROM_cat = (m["FROM_topcategory"], m["FROM_subcategory"])
+        TO_cat = (m["TO_topcategory"], m["TO_subcategory"])
+        multiplier = float(m["multiplier"])
+        
+        FROM = (FROM_name,) + FROM_cat
+        TO = (TO_name,) + TO_cat
+        
+        if FROM_name is not None and TO_name is not None and multiplier is not None:
             
-            if m["orig"] not in SBERT_mapping:
-                SBERT_mapping[m["orig"]]: dict = {}
-                
-            SBERT_mapping[m["orig"]][m["mapped"]]: float = float(m["multiplier"])
+            if FROM not in SBERT_mapping:
+                SBERT_mapping[FROM]: tuple = ()
             
-            if m.get("multiplier") != 0:
+            SBERT_mapping[FROM] += (TO + (multiplier,),)
+            
+            if multiplier != 0:
                 
-                if m["mapped"] not in SBERT_mapping:
-                    SBERT_mapping[m["mapped"]]: dict = {}
+                if TO not in SBERT_mapping:
+                    SBERT_mapping[TO]: tuple = ()
                 
-                SBERT_mapping[m["mapped"]][m["orig"]]: float = float(1 / m["multiplier"])
-
+                SBERT_mapping[TO] += (FROM + (float(1 / multiplier),),)            
+            
     
     # Create biosphere mapping dictionary
     biosphere_mapping: dict = {}
@@ -85,21 +96,32 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
     for m in biosphere_flows_2:
         
         name: (str | None) = m.get("name") if m.get("name") != "" else None
-        SBERTs: dict = SBERT_mapping.get(name) if SBERT_mapping.get(name) is not None else {}
         CAS: (str | None) = m.get("CAS number") if m.get("CAS number") != "" else None
         top_category: (str | None) = m.get("top_category") if m.get("top_category") != "" else None
         sub_category: str = m.get("sub_category") if m.get("sub_category") != "" and m.get("sub_category") is not None else "unspecified"
         unit: (str | None) = m.get("unit") if m.get("unit") != "" else None
         location: (str | None) = m.get("location") if m.get("location") != "" else None
         
+        # SBERTs: dict = SBERT_mapping.get(name) if SBERT_mapping.get(name) is not None else {}
+        SBERTs_I: (tuple | None) = SBERT_mapping.get((name, top_category, sub_category))
+        SBERTs_II: (tuple | None) = SBERT_mapping.get((name, None, None))
+        SBERTs: tuple = ()
+        
+        if SBERTs_I is not None:
+            SBERTs += SBERTs_I
+            
+        if SBERTs_II is not None:
+            SBERTs += tuple([(TO_name, top_category, sub_category, multiplier) for TO_name, _, _, multiplier in SBERTs_II])
+        
+            
         all_fields: list[tuple, float] = (
             [((name, top_category, sub_category, unit, location), float(1))] +
-            [((SBERT_name, top_category, sub_category, unit, location), SBERT_multiplier) for SBERT_name, SBERT_multiplier in SBERTs.items()] +
+            [((SBERT_name, SBERT_topcat, SBERT_subcat, unit, location), SBERT_multiplier) for SBERT_name, SBERT_topcat, SBERT_subcat, SBERT_multiplier in SBERTs] +
             [((CAS, top_category, sub_category, unit, location), float(1))]
             )
         
         no_units: list[tuple, float] = ([((name, top_category, sub_category, location), float(1))] +
-                                        [((SBERT_name, top_category, sub_category, location), SBERT_multiplier) for SBERT_name, SBERT_multiplier in SBERTs.items()] +
+                                        [((SBERT_name, SBERT_topcat, SBERT_subcat, location), SBERT_multiplier) for SBERT_name, SBERT_topcat, SBERT_subcat, SBERT_multiplier in SBERTs] +
                                         [((CAS, top_category, sub_category, location), float(1))]
                                         )
         
@@ -122,39 +144,49 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
     for exc in biosphere_flows_1:
             
         exc_name: (str | None) = None if exc.get("name") == "" else exc.get("name")
-        exc_SBERTs: dict = SBERT_mapping.get(exc_name) if SBERT_mapping.get(exc_name) is not None else {}
         exc_CAS: (str | None) = exc.get("CAS number") if exc.get("CAS number") != "" else None
         exc_top_category: (str | None) = exc.get("top_category") if exc.get("top_category") != "" else None
         exc_sub_category: str = exc.get("sub_category") if exc.get("sub_category") != "" and exc.get("sub_category") is not None else "unspecified"
         exc_unit: (str | None) = None if exc.get("unit") == "" else exc.get("unit")
         exc_location: (str | None) = None if exc.get("location") == "" else exc.get("location")
         # found: None = None
+        # exc_SBERTs: dict = SBERT_mapping.get(exc_name) if SBERT_mapping.get(exc_name) is not None else {}
+
+        exc_SBERTs_I: (tuple | None) = SBERT_mapping.get((exc_name, exc_top_category, exc_sub_category))
+        exc_SBERTs_II: (tuple | None) = SBERT_mapping.get((exc_name, None, None))
+        exc_SBERTs: tuple = ()
         
+        if exc_SBERTs_I is not None:
+            exc_SBERTs += exc_SBERTs_I
+            
+        if exc_SBERTs_II is not None:
+            exc_SBERTs += tuple([(TO_name, exc_top_category, exc_sub_category, multiplier) for TO_name, _, _, multiplier in exc_SBERTs_II])
+                
         if (exc_name, exc_top_category, exc_sub_category, exc_unit, exc_location) in successful_migration_data:
             continue
         
         
         all_fields: list[tuple, float] = (
             [((exc_name, exc_top_category, exc_sub_category, exc_unit, exc_location), float(1))] +
-            [((SBERT_name, exc_top_category, exc_sub_category, exc_unit, exc_location), SBERT_multiplier) for SBERT_name, SBERT_multiplier in exc_SBERTs.items()] +
+            [((SBERT_name, SBERT_top_category, SBERT_sub_category, exc_unit, exc_location), SBERT_multiplier) for SBERT_name, SBERT_top_category, SBERT_sub_category, SBERT_multiplier in exc_SBERTs] +
             [((exc_CAS, exc_top_category, exc_sub_category, exc_unit, exc_location), float(1))]
             )
         
         empty_subcat: list[tuple, float] = (
             [((exc_name, exc_top_category, "unspecified", exc_unit, exc_location), float(1))] +
-            [((SBERT_name, exc_top_category, "unspecified", exc_unit, exc_location), SBERT_multiplier) for SBERT_name, SBERT_multiplier in exc_SBERTs.items()] +
+            [((SBERT_name, SBERT_top_category, "unspecified", exc_unit, exc_location), SBERT_multiplier) for SBERT_name, SBERT_top_category, SBERT_sub_category, SBERT_multiplier in exc_SBERTs] +
             [((exc_CAS, exc_top_category, "unspecified", exc_unit, exc_location), float(1))]
             )
         
         no_units: list[tuple, float] = (
             [((exc_name, exc_top_category, exc_sub_category, exc_location), float(1))] +
-            [((SBERT_name, exc_top_category, exc_sub_category, exc_location), SBERT_multiplier) for SBERT_name, SBERT_multiplier in exc_SBERTs.items()] +
+            [((SBERT_name, SBERT_top_category, SBERT_sub_category, exc_location), SBERT_multiplier) for SBERT_name, SBERT_top_category, SBERT_sub_category, SBERT_multiplier in exc_SBERTs] +
             [((exc_CAS, exc_top_category, exc_sub_category, exc_location), float(1))]
             )
         
         empty_subcat_and_no_units: list[tuple, float] = (
             [((exc_name, exc_top_category, "unspecified", exc_location), float(1))] +
-            [((SBERT_name, exc_top_category, "unspecified", exc_location), SBERT_multiplier) for SBERT_name, SBERT_multiplier in exc_SBERTs.items()] +
+            [((SBERT_name, SBERT_top_category, "unspecified", exc_location), SBERT_multiplier) for SBERT_name, SBERT_top_category, SBERT_sub_category, SBERT_multiplier in exc_SBERTs] +
             [((exc_CAS, exc_top_category, "unspecified", exc_location), float(1))]
             )
 
@@ -186,7 +218,7 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
     unit_mapping: dict = {"cubic meter": {"kilogram": 1000},
                           "litre": {"cubic meter": 0.001},
                           "square meter": {"hectare": 1/10000},
-                          "standard cubic meter": {"cubic meter": 1, "kilogram": 1000},
+                          "standard cubic meter": {"cubic meter": 1, "kilogram": 0.8},
                           "megajoule": {"kilowatt hour": 1/3.6},
                           "kilowatt hour": {"megajoule": 3.6}
                           }
@@ -219,6 +251,13 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
         else:
             unit_multiplier: (float | None) = unit_mapping.get(FROM["unit"], {}).get(TO["unit"])
             
+            # print("here")
+            # print(FROM["name"], " -> ", TO["name"])
+            # print(FROM["location"], " -> ", TO["location"])
+            # print(FROM["unit"], " -> ", TO["unit"])
+            # print()
+            # raise ValueError("here")
+            
             if unit_multiplier is None:
                 print(FROM["name"], " -> ", TO["name"])
                 print(FROM["location"], " -> ", TO["location"])
@@ -228,6 +267,7 @@ def create_harmonized_biosphere_migration(biosphere_flows_1: list,
         
         # Retrieve any additional multiplier and multiply this one with the unit multiplier
         multiplier: float = TO.get("multiplier", float(1)) * unit_multiplier
+        TO["multiplier"] = multiplier
         
         # Field one always specifies to which item the mapping should be applied.
         # one: list[str] = [FROM[n] for n in successful_migration_dict["fields"]]
