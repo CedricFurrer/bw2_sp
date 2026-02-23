@@ -1399,39 +1399,50 @@ class LCA_Calculation():
 
 
 #%%
+
 # if __name__ == "__main__":
     
 #     here: pathlib.Path = pathlib.Path(__file__).parent
-#     from utils import change_brightway_project_directory
     
-#     # here2: pathlib.Path = pathlib.Path("/home/f80856737/mnt/agroscope/Data-Work/27_Natural_Resources-RE/275.3 Ökobilanzen_Tools/Brightway2/Github/bw2_sp")
-#     change_brightway_project_directory(str(here / "notebook" / "Brightway2_projects"))
+#     def change_brightway_project_directory(BRIGHTWAY2_DIR: (pathlib.Path | str),
+#                                            verbose: bool = True):
+        
+#         # Make variable check
+#         hp.check_function_input_type(change_brightway_project_directory, locals())
+        
+#         # Print statement
+#         if verbose:
+#             print("BRIGHTWAY2_DIR is set to the following path:\n" + str(BRIGHTWAY2_DIR) + "\n")
+        
+#         # Those lines are directly taken from Brightway
+#         # It constructs some fields new and sets the path according to the one given by ourselves
+#         bw2data.projects._base_data_dir = str(BRIGHTWAY2_DIR)
+#         bw2data.projects._base_logs_dir = os.path.join(str(BRIGHTWAY2_DIR), "logs")
+#         bw2data.projects.db = bw2data.sqlite.SubstitutableDatabase(os.path.join(str(BRIGHTWAY2_DIR), "projects.db"), [bw2data.project.ProjectDataset])
+#         bw2data.projects.set_current("default", update = False)
+    
+#     change_brightway_project_directory(str(here / "Brightway2_projects"))
 #     project_name: str = "Food databases"
 #     bw2data.projects.set_current(project_name)
     
-#     acts: list = [m for m in bw2data.Database("AgriFootprint v6.3 - SimaPro")][0:100]
-#     mets: list[tuple] = [m for m in bw2data.methods if "SALCA" in m[0]]
+#     acts: list = [m for m in bw2data.Database("AgriFootprint v6.3 - SimaPro")]
+#     mets: list[tuple] = [m for m in bw2data.methods][0]
     
 #     lca_calculation: LCA_Calculation = LCA_Calculation(activities = acts,
 #                                                        methods = mets,
 #                                                        functional_amount = 1,
-#                                                        cut_off_percentage = 0.1,
+#                                                        cut_off_percentage = None,
 #                                                        exchange_level = 1)
     
-#     lca_calculation.calculate(calculate_LCIA_scores = True,
-#                               extract_LCI_exchanges = True,
-#                               extract_LCI_emission_contribution = True,
+#     lca_calculation.calculate(calculate_LCIA_scores = False,
+#                               extract_LCI_exchanges = False,
+#                               extract_LCI_emission_contribution = False,
 #                               extract_LCI_process_contribution = True,
-#                               calculate_LCIA_scores_of_exchanges = True,
-#                               calculate_LCIA_emission_contribution = True,
-#                               calculate_LCIA_process_contribution = True)
+#                               calculate_LCIA_scores_of_exchanges = False,
+#                               calculate_LCIA_emission_contribution = False,
+#                               calculate_LCIA_process_contribution = False)
     
-#     results_raw: dict[str, list[dict]] = lca_calculation.results_raw
-#     results_extended: dict[str, list[dict]] = lca_calculation.get_results(extended = True)
-#     results_simple: dict[str, list[dict]] = lca_calculation.get_results(extended = False)
-#     lca_calculation.write_results(path = here, filename = None, use_timestamp_in_filename = True, extended = True)
-#     characterization_factors_selected: list[dict] = lca_calculation.get_characterization_factors(methods = list(bw2data.methods)[0:2], extended = True)
-#     characterization_factors_all: list[dict] = lca_calculation.get_characterization_factors(methods = None, extended = True)
-#     pd.DataFrame(characterization_factors_all).to_excel(here / "Characterization_factors.xlsx")
+#     contribution_results = lca_calculation.get_results(extended = True)
+        
 
 
