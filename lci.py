@@ -288,7 +288,7 @@ def set_code(db_var,
     
     # Raise error if rows are found that do not contain all information according to the fields specified
     if len(rows_with_nan) > 0:
-        raise ValueError("Some rows in file 'data_UUIDs.xlsx' contain missing fields. Check indexes:\n" + "\n".join([" - " + str(m + 1) for m in list(rows_with_nan.index)]))
+        raise ValueError("Some rows in file 'UUIDs.xlsx' contain missing fields.")
     
     # Loop through each line in the excel file
     for item in UUIDs_orig.to_dict("records"):
@@ -1536,6 +1536,7 @@ def import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths: list,
                                    db_name: str,
                                    encoding: str = "latin-1",
                                    delimiter: str = "\t",
+                                   link_internally : bool = True,
                                    verbose: bool = True,
                                    ) -> bw2io.importers.base_lci.LCIImporter:
     
@@ -1645,13 +1646,15 @@ def import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths: list,
     # NOTE: to get to the original amount, we need to multiply the production amount with the allocation factor. We also need to do that after having transformed units. Otherwise, the unit of other fields is adapted but not the output amount, which leads to a wronge value for the output amount.
     db: list[dict] = add_output_amount_field(db)
     
+    # ... after discussion, duplicates should not happen, therefore if there are any, the collaborator should be aware of it and delete them manually
+    # removing them in this script would not be transparent and could remove the wrong one
     # ... we can not write duplicates and therefore need to remove them before
     # we can specify the fields which should be used to identify the duplicates
-    db: list[dict] = remove_duplicates(db,
-                                       fields = ("name", "unit", "location"),
-                                       strip = True,
-                                       case_insensitive = True,
-                                       remove_special_characters = False)
+    # db: list[dict] = remove_duplicates(db,
+    #                                    fields = ("name", "unit", "location"),
+    #                                    strip = True,
+    #                                    case_insensitive = True,
+    #                                    remove_special_characters = False)
         
     # ... exchanges that have an amount of 0 will not contribute to the environmental impacts
     # we can therefore remove them
@@ -1661,15 +1664,16 @@ def import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths: list,
     db: list[dict] = identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories(db)
     
     # Apply internal linking of activities
-    db: list[dict] = link.link_activities_internally(db,
-                                                     production_exchanges = True,
-                                                     substitution_exchanges = True,
-                                                     technosphere_exchanges = True,
-                                                     relink = False,
-                                                     strip = True,
-                                                     case_insensitive = True,
-                                                     remove_special_characters = False,
-                                                     verbose = verbose)
+    if link_internally :
+        db: list[dict] = link.link_activities_internally(db,
+                                                         production_exchanges = True,
+                                                         substitution_exchanges = True,
+                                                         technosphere_exchanges = True,
+                                                         relink = False,
+                                                         strip = True,
+                                                         case_insensitive = True,
+                                                         remove_special_characters = False,
+                                                         verbose = verbose)
     
     # As brightway importer object    
     db_as_obj: bw2io.importers.base_lci.LCIImporter = bw2io.importers.base_lci.LCIImporter(db_name)
