@@ -26,7 +26,6 @@ from utils import (change_brightway_project_directory,
                    change_database_name)
 
 
-
 #%% File- and folderpaths, key variables
 start_time = datetime.now()
 
@@ -38,13 +37,15 @@ LCI_wfldb_simapro_folderpath: pathlib.Path = here.parent / "data" / "lci" / "WFL
 LCI_salca_simapro_folderpath: pathlib.Path = here.parent / "data" / "lci" / "SALCA_fromSimaPro"
 LCI_fooddk_simapro_folderpath: pathlib.Path = here.parent / "data" / "lci" / "FoodDK_fromSimaPro"
 LCI_esu_simapro_folderpath: pathlib.Path = here.parent / "data" / "lci" / "ESU_fromSimaPro"
+# LCIA_SimaPro_CSV_folderpath: pathlib.Path = here.parent / "data" / "lcia" / "fromSimaPro - Copie"
 LCIA_SimaPro_CSV_folderpath: pathlib.Path = here.parent / "data" / "lcia" / "fromSimaPro"
+
 
 # Generic and Brightway
 if bw2data.__version__[0] >= 4:
-    project_path: pathlib.Path = here  / "Brightway2.5_projects"
+    project_path: pathlib.Path = here.parent.parent  / "Brightway2.5_projects"
 else:
-    project_path: pathlib.Path = here / "Brightway2_projects"
+    project_path: pathlib.Path = here.parent.parent / "Brightway2_projects"
     
 project_path.mkdir(exist_ok = True)
 
@@ -73,13 +74,13 @@ output_path: pathlib.Path = pathlib.Path(bw2data.projects.output_dir)
 #%% Defaults for key variables
 biosphere_db_name_simapro: str = "biosphere3 - from SimaPro"
 unlinked_biosphere_db_name: str = biosphere_db_name_simapro + " - unlinked"
-ecoinvent_db_name_simapro: str = "ecoinvent v3.11 Cut-off - SimaPro"
-agribalyse_db_name_simapro: str = "Agribalyse v3.2 - SimaPro (background ecoinvent v3.9.1)"
-agrifootprint_db_name_simapro: str = "AgriFootprint v6.3 - SimaPro (background ecoinvent v3.8)"
-wfldb_db_name_simapro: str = "World Food LCA Database v3.5 - SimaPro (background ecoinvent v3.5)"
-salca_db_name_simapro: str = "SALCA Database v3.11 (background ecoinvent v3.11)"
-fooddk_db_name_simapro: str = "LCA Food DK"
-esu_db_name_simapro: str = "ESU Services (background ecoinvent v3.11)"
+ecoinvent_db_name_simapro: str = "ecoinvent v3.11 Cut-off - SimaPro - regionalized"
+agribalyse_db_name_simapro: str = "Agribalyse v3.2 - SimaPro - regionalized (SimaPro background ecoinvent v3.9.1)"
+agrifootprint_db_name_simapro: str = "AgriFootprint v7.0.1 - SimaPro - regionalized (SimaPro background ecoinvent v3.9.1)"
+wfldb_db_name_simapro: str = "World Food LCA Database v3.5 - SimaPro - regionalized (SimaPro background ecoinvent v3.5)"
+salca_db_name_simapro: str = "SALCA Database v3.11 - SimaPro - regionalized (SimaPro background ecoinvent v3.11)"
+fooddk_db_name_simapro: str = "LCA Food DK - SimaPro"
+esu_db_name_simapro: str = "ESU Services - SimaPro - regionalized (SimaPro background ecoinvent v3.11)"
 
 #%% Import SimaPro LCIA methods and create SimaPro biosphere database
 methods: list[dict] = import_SimaPro_LCIA_methods(path_to_SimaPro_CSV_LCIA_files = LCIA_SimaPro_CSV_folderpath,
@@ -139,7 +140,7 @@ fooddk_db_simapro.apply_strategy(partial(migrate_from_excel_file,
                                          excel_migration_filepath = LCI_fooddk_simapro_folderpath / "custom_migration_FoodDK.xlsx",
                                          migrate_activities = False,
                                          migrate_exchanges = True),
-                                 verbose = True)
+                                         verbose = True)
 
 fooddk_db_simapro.apply_strategy(partial(link.link_activities_internally,
                                          production_exchanges = True,
@@ -280,14 +281,17 @@ original_ecoinvent_db_simapro.statistics()
 
 #%% Patterns to identify inventories from different databases
 
+# # Specific patterns that are used to identify SALCA inventories
+# SALCA_patterns: list[str] = ["SALCA", # abbreviation to identify SALCA inventories
+#                             "SLACA", # WOW... I mean come on...
+#                             "at plant/CH mix", # some CH mixes that were created without the SALCA abbreviation
+#                             "maize silage, conservation, sect.", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
+#                             "maize silage, horiz. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
+#                             "maize silage, tow. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
+#                             ]
+
 # Specific patterns that are used to identify SALCA inventories
-SALCA_patterns: list[str] = ["SALCA", # abbreviation to identify SALCA inventories
-                            "SLACA", # WOW... I mean come on...
-                            "at plant/CH mix", # some CH mixes that were created without the SALCA abbreviation
-                            "maize silage, conservation, sect.", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
-                            "maize silage, horiz. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
-                            "maize silage, tow. silo, IP, conservation, sect", # This inventory does not contain the SALCA abbreviation in the SimaPro name but we still have to include it.
-                            ]
+SALCA_patterns: list[str] = ["SALCA"]
 
 # Specific patterns that are used to identify WFLDB inventories
 WFLDB_patterns: list[str] = ["WFLDB", # because why not finding WFLDB inventories in SALCA/ecoinvent?
@@ -469,7 +473,6 @@ salca_db_simapro.write_database()
 # Free up memory
 del salca_db_simapro
 
-# aaa = [m for m in bw2data.Database(wfldb_db_name_simapro) if "Ammonium nitrate" in m["name"]]
 
 #%% Import Agribalyse LCI database from SimaPro
 agribalyse_db_simapro: bw2io.importers.base_lci.LCIImporter = import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths = [LCI_agribalyse_simapro_folderpath / "AGB.CSV"],
@@ -571,6 +574,7 @@ agrifootprint_db_simapro.apply_strategy(partial(link.link_activities_internally,
 
 print("\n------- Statistics")
 agrifootprint_db_simapro.statistics()
+# agrifootprint_db_simapro.write_excel(only_unlinked = True)
 
 # Make a new biosphere database for the flows which are currently not linked
 # Add unlinked biosphere flows with a custom function
