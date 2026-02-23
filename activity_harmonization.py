@@ -66,12 +66,12 @@ class Multiplier:
         return float(1) if value is None else value
 
 
-def direct_on_actcode_refcode(act: ActivityDefinition) -> list[tuple]:
-    return [(act.activity_code, act.reference_product_code)]
+def direct_on_actcode_refcode_unit(act: ActivityDefinition) -> list[tuple]:
+    return [(act.activity_code, act.reference_product_code, act.unit)]
 
-def direct_on_actcode(act: ActivityDefinition) -> list[tuple]:
+def direct_on_actcode_unit(act: ActivityDefinition) -> list[tuple]:
     if isinstance(act.activity_code, str) and act.reference_product_code is None:
-        return [(act.activity_code,)]
+        return [(act.activity_code, act.unit)]
     else:
         return []
 
@@ -183,8 +183,8 @@ class ActivityHarmonization:
         self._rule_fns: dict[str, Callable[ActivityDefinition, tuple]] = {
             "direct_on_actname_refname_location_unit": direct_on_actname_refname_location_unit,
             "direct_on_refname_actname_location_unit": direct_on_refname_actname_location_unit,
-            "direct_on_actcode_refcode": direct_on_actcode_refcode,
-            "direct_on_actcode": direct_on_actcode,
+            "direct_on_actcode_refcode_unit": direct_on_actcode_refcode_unit,
+            "direct_on_actcode_unit": direct_on_actcode_unit,
             "direct_on_name_location_unit": direct_on_name_location_unit,
             "direct_on_SimaPro_name_unit": direct_on_SimaPro_name_unit,
             "direct_on_created_SimaPro_name_unit": partial(direct_on_created_SimaPro_name_unit, models = self.models, systems = self.systems)   ,
