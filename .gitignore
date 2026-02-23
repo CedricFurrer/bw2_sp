@@ -66,7 +66,11 @@ defaults/all-MiniLM-L6-v2.zip
 data/lci/*
 data/lcia/*
 notebook/notebook_data/*
+notebook/Brightway2.5_projects
+notebook/Brightway2_projects
 defaults/all-MiniLM-L6-v2
+*/archive/*
+archive/*
 
 # Keep .gitkeep #
 #################
@@ -76,5 +80,6 @@ defaults/all-MiniLM-L6-v2
 # Exclude or include folders and files #
 ########################################
 !notebook/notebook_data
+notebook/Brightway_projects
 !defaults/CAS.json
 

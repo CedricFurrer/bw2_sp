@@ -1,1077 +1,1448 @@
 import pathlib
+import os
 
 if __name__ == "__main__":
-    import os
     os.chdir(pathlib.Path(__file__).parent)
-    
-import os
-import re
+
+import ast
+import numpy
 import pathlib
 import datetime
+import bw2calc
 import bw2data
+import numpy as np
 import pandas as pd
-import brightway2 as bw
-from bw2calc.errors import NonsquareTechnosphere, AllArraysEmpty, EmptyBiosphere
+from bw2calc.errors import OutsideTechnosphere
 import helper as hp
 
 
-#%% Define useful functions for LCA calculation
+#%%
 
-# Function to extract all characterization factors to dictionary in list format
-def extract_CF(selected_methods: list):
+class LCA_Calculation():
     
-    # Load the biosphere database
-    bio = {}
-    for bio_name in [m for m in bw.databases if bool(re.search("biosphere", m))]:
-        bio_as_list = [m.as_dict() for m in bw.Database(bio_name)]
-        bio |= {(m["database"], m["code"]): m for m in bio_as_list}
-    
-    # Load the methods metadata
-    metadata = {k: v for k, v in bw.methods.deserialize().items()}
-    
-    # Define the column names
-    data_description = ["Method", "Flow_code", "Flow_name", "Flow_CAS_number", "Flow_categories", "Flow_location", "Characterization_factor", "Characterization_unit"]
-    
-    # Loop through each flow and extract the information and write to column name
-    data_orig = [(method_name,
-             flow[1],
-             bio[flow].get("name", "Key 'name' not available"),
-             bio[flow].get("CAS number", "Key 'CAS number' not available"),
-             bio[flow].get("categories", "Key 'categories' not available"),
-             bio[flow].get("location", "Key 'location' not available"),
-             cf,
-             str(metadata[method_name].get("unit", "Biosphere key 'unit' not available") + " / " + bio[flow].get("unit", "Method key 'unit' not available"))) for method_name in selected_methods for flow, cf in bw.Method(method_name).load()]
-    
-    # Make a dictionary 
-    data = {m: [n[idx] for n in data_orig] for idx, m in enumerate(data_description)}
-    
-    return data
-
-# Function to export all processes contributing to a LCA
-def top_processes_by_name(characterized_matrix, activity_dict):
-    processes_I = characterized_matrix.transpose().sum(axis = 1)
-    processes_II = pd.DataFrame(processes_I, columns = ["Score"]).assign(Input = activity_dict).query("Score != 0").to_dict("records")
-    return processes_II    
-    
-# Function to export all emissions contributing to a LCA
-def top_emissions_by_name(characterized_matrix, biosphere_dict):
-    emissions_I = characterized_matrix.sum(axis = 1)
-    emissions_II = pd.DataFrame(emissions_I, columns = ["Score"]).assign(Input = biosphere_dict).query("Score != 0").to_dict("records")
-    return emissions_II
-
-# Function to export all raw elementary flows of an inventory
-def reduce_inventory_to_biosphere_emissions(characterized_inventory, biosphere_dict):
-    array = characterized_inventory.sum(axis = 1)
-    data = [{"Method": None, "Input": key, "Flow_amount": array[idx, 0]} for idx, key in enumerate(biosphere_dict) if array[idx, 0] != 0]
-    return data
-
-# Function to reduce the results of the emission and process contribution using a cut off value
-def apply_cutoff(v1, Scores, cut_off):
-    
-    # Initialize list
-    return_list = []
-    
-    # Loop through each inventory
-    for idx_I, m in enumerate(v1):
+    def __init__(self,
+                 activities: list,
+                 methods: list,
+                 functional_amount: (float | int) = 1,
+                 cut_off_percentage: (float | int | None) = None,
+                 exchange_level: int = 1,
+                 print_progress_bar: bool = True) -> None:
         
-        # Loop through each method
-        for idx_II, n in enumerate(m):
+        """ A class that provides functions to do fast and efficient LCA calculations in Brightway2
+        Only the list of LCI activities and the LCIA methods need to be supplied.
+        
+        
+        Parameters
+        ----------
+        activities : list
+            A list of activities (LCI) (in Brightway format, as activity objects retrieved from background databases) for which impacts should be calculated.
             
-            # Initialize a rest variable with the value 0
-            rest = 0
+        methods : list
+            A list of LCIA methods (in Brightway format, as tuple) which should be used for impact assessment of the inventories.
+            Methods need to be registered in the Brightway background in order to work.
             
-            # Loop through each results value for the given method and activity
-            for o in n:
+        functional_amount : (float | int)
+            Indicates the reference unit of the calculated environmental impacts. Refers to how much of an activity should be calculated.
+            With value of 1, it will calculate/retrieve information for 1 unit of the activity.
+            The default is 1.
+        
+        cut_off_percentage : (float | int | None)
+            Will only be applied in case LCIA emission contribution and LCIA process contribution are calculated. The value needs to be between 0 and 1.
+            When a percentage is indicated (not None), the list of contributing emissions or processes will be shortened.
+            The higher the percentage, the higher the cut off for scores and therefore the shorter the list.
+            Impacts that are cut will be summarised into a 'Rest' value.
+            The default is None (no cut off applied).
+            
+        exchange_level : int
+            Needs to be >= 1 in order to work. Specifies at which level/tier the exchanges of an activity should be extracted from.
+            The higher the level, the more exchanges and the longer the calculation will take.
+            Important: for emissions, there are no subsequent levels. It would be wrong to just avoid them. That's why for emissions the level might be smaller than what is specified here.
+            The default is 1.
+        
+        print_progress_bar : bool
+            Specifies whether to print a progress bar to the console indicating the progress of the calculation
+            
+        """
+        
+        
+        # Check function input type
+        hp.check_function_input_type(self.__init__, locals())
+        
+        # Check if activities are all Brightway activity objects
+        check_activities = [m for m in activities if not isinstance(m, bw2data.backends.peewee.proxies.Activity)]
+        
+        # Check and raise error
+        if check_activities != []:
+            raise ValueError("Input variable 'activities' needs to be a list of only Activity objects.")
+            
+        # Check if methods are all tuples
+        assert all([isinstance(m, tuple) for m in methods]), "At least one method is not of type <tuple>."
+        
+        # Extract all methods that are not registered in the Brightway background
+        check_methods = [str(m) for m in methods if m not in bw2data.methods]
+        
+        # Check if all methods are registered in the Brightway background
+        if check_methods != []:
+            raise ValueError("They following methods are not registered:\n - " + "\n - ".join(check_methods))
+        
+        # Raise error if level is smaller than 1
+        if exchange_level < 1:
+            raise ValueError("Input variable 'exchange_level' needs to be greater than 1 but is currently '" + str(exchange_level) + "'.")
+        
+        # Raise error if the cut off is not between 0 and 1
+        if cut_off_percentage is not None and (cut_off_percentage < 0 or cut_off_percentage > 1):
+            raise ValueError("Input variable 'cut_off_percentage' needs to be between 0 and 1 but is currently '" + str(cut_off_percentage) + "'.")
+        
+        # Loop through each activity and construct the key tuple if not yet existing
+        for activity in activities:
+            
+            # Check if the key is already existing
+            if not hasattr(activity, "key"):
                 
-                # Extract the overall score for this activity and method (= summed up result) from the calculation before
-                sum_score = Scores[idx_I][idx_II]["Score"]
+                # Extract key components, database and code
+                database: (str | None) = activity["database"]
+                code: (str | None) = activity["code"]
                 
-                # Check whether the current data point exceeds the cutoff
-                if abs(o["Score"]) > abs(sum_score * cut_off):
+                # Raise error if they were not found
+                if database is None or code is None:
+                    raise ValueError("Activity key tuple could not be constructed.")
+                
+                # Add key attribute
+                activity.key: tuple[str, str] = (database, code)
+        
+        # The functional unit is defined as 1
+        self.functional_amount: (int | float) = functional_amount
+        
+        # Add to object
+        self.activities: list[bw2data.backends.peewee.proxies.Activity] = activities
+        self.methods: list[tuple] = methods
+        self.cut_off_percentage: (int | float) = cut_off_percentage
+        self.exchange_level: int = exchange_level
+        self.progress_bar: bool = print_progress_bar
+        
+        # Defaults
+        self.rest_key: tuple = (None, None)
+        self.rest_name: str = "Rest"
+        
+        # Definition of names to be used for the different results
+        self.name_LCIA_scores: str = "LCIA_scores"
+        self.name_LCIA_immediate_scores: str = "LCIA_scores_of_exchanges"
+        self.name_LCI_exchanges: str = "LCI_exchanges"
+        self.name_LCI_emission_contributions: str = "LCI_emission_contribution"
+        self.name_LCI_process_contributions: str = "LCI_process_contribution"
+        self.name_LCIA_emission_contributions: str = "LCIA_emission_contribution"
+        self.name_LCIA_process_contributions: str = "LCIA_process_contribution"
+        self.name_characterization_factors: str = "Characterization_factors"
+        
+        self.activities_as_dict: dict = {}
+        self.database_objects: dict = {}
+        self.method_objects: dict = {}
+        self.method_units: dict = {}
+        self.characterization_factors: dict = {}
+        self.lca_objects: dict = {} # almost everywhere
+        self.characterization_matrices: dict = {} # LCIA score, LCIA emission contr., LCIA process contr.
+        self.biosphere_dicts_as_arrays: dict = {} # LCI emission contr., LCIA emission contr.
+        self.activity_dicts_as_arrays: dict = {} # LCI process contr., LCIA process contr.
+        self.element_arrays: dict = {} # all contributions, LCI & LCIA, emission & process
+        self.structured_arrays_for_emission_contribution: dict = {} # LCI emission contr, LCIA emission contr.
+        self.structured_arrays_for_process_contribution: dict = {} # LCI process contr, LCIA process contr.
+        self.method_arrays_for_LCIA_emission_contribution: dict = {} # LCIA emission contr.
+        self.method_arrays_for_LCIA_process_contribution: dict = {} # LCIA process contr.
+        self._temporary_key_to_exchanges_mapping: dict = {}
+        self._temporary_score_results: dict = {}
+        
+        # Keys to extract from the activity dicts
+        self.keys_to_extract_from_BW_acts: tuple[str] = ("name",
+                                                         "SimaPro_name",
+                                                         "categories",
+                                                         "location",
+                                                         "unit")
+        
+        # Names to give when mapping
+        self._act_k_name: str = "Activity"
+        self._flow_k_name: str = "Flow"
+        self._score_k_name: str = "Score"
+        self._method_k_name: str = "Method"
+        self._cf_k_name: str = "Characterization_Factor"
+        self._name_sep: str = "_"
+        
+        # Specific column names
+        self.k_act_database: str = self._name_sep.join((self._act_k_name, "database"))
+        self.k_act_code: str = self._name_sep.join((self._act_k_name, "code"))
+        self.k_act_amount: str = self._name_sep.join((self._act_k_name, "amount"))
+        self.k_flow_database: str = self._name_sep.join((self._flow_k_name, "database"))
+        self.k_flow_code: str = self._name_sep.join((self._flow_k_name, "code"))
+        self.k_flow_amount: str = self._name_sep.join((self._flow_k_name, "amount"))
+        
+    
+    def _get_database_object(self, database: str) -> bw2data.Database:
+        
+        # Simply return, if already existing
+        if self.database_objects.get(database) is not None:
+            return self.database_objects[database]
+        
+        # Initialize the object
+        obj: bw2data.Database = bw2data.Database(database)
+        
+        # Add to dictionary, temporarily
+        self.database_objects[database]: bw2data.Database = obj
+        
+        # Return the object
+        return obj
+    
+    
+    def _get_method_object(self, method: tuple[str]) -> bw2data.Method:
+        
+        # Simply return, if already existing
+        if self.method_objects.get(method) is not None:
+            return self.method_objects[method]
+        
+        # Initialize the object
+        obj: bw2data.Method = bw2data.Method(method)
+        
+        # Add to dictionary, temporarily
+        self.method_objects[method]: bw2data.Method = obj
+        
+        # Return the object
+        return obj
+    
+    
+    def _get_method_unit(self, method: tuple[str]) -> str:
+        
+        # Simply return, if already existing
+        if self.method_units.get(method) is not None:
+            return self.method_units[method]
+        
+        # Get or initialize the method object
+        method_obj: bw2data.Method = self._get_method_object(method = method)
+        method_unit: str = method_obj.metadata["unit"]
+
+        # Add to dictionary, temporarily
+        self.method_units[method]: str = method_unit
+        
+        # Return the method unit as string
+        return method_unit
+    
+    
+    def _load_characterization_factors(self, method: tuple[str]) -> None:
+        
+        # Simply return, if already existing
+        if self.characterization_factors.get(method) is not None:
+            return
+        
+        # Get method object
+        method_obj: bw2data.Method = self._get_method_object(method = method)
+        
+        # Initialize a new method dictionary
+        self.characterization_factors[method]: dict[tuple, dict[tuple[str, str], float]] = {}
+        
+        # Loop through each characterization factor for each flow individually
+        for key, cf in method_obj.load():
+            
+            # Check if key exists, if not create one with a 0 amount
+            if self.characterization_factors[method].get(key) is None:
+                self.characterization_factors[method][key]: float = float(0)
+                
+            # Add to the existing CF
+            self.characterization_factors[method][key] += cf
+           
+            
+    def _get_characterization_factor(self, method: tuple[str], key: tuple[str, str]) -> (float | None):
+        
+        # Load method if not yet loaded
+        self._load_characterization_factors(method = method)
+        
+        # Return the characterization factor
+        return self.characterization_factors[method].get(key)
+    
+    
+    def _get_act_as_dict(self, act_key: tuple[str, str], keys_to_extract: (tuple[str] | None) = None) -> dict:
+        
+        # Simply return, if already existing
+        if self.activities_as_dict.get(act_key) is not None:
+            return self.activities_as_dict[act_key]
+        
+        # Retrieve the activity object
+        act = self._get_database_object(database = act_key[0]).get(act_key[1])
+        
+        # Extract the relevant keys, or if None is specified, the whole dictionary
+        act_as_dict: dict = {i: act.get(i) for i in keys_to_extract} if keys_to_extract is not None else act.as_dict()
+        
+        # Save the dict temporarily
+        self.activities_as_dict[act_key]: dict = act_as_dict
+        
+        # Return the dictionary
+        return act_as_dict
+    
+    
+    def _get_LCA_object(self, database: str) -> bw2calc.lca.LCA:
+        
+        # Simply return, if already existing
+        if self.lca_objects.get(database) is not None:
+            return self.lca_objects[database]
+        
+        # Extract first inventory and method to then initialise lca object
+        _act: bw2data.backends.peewee.proxies.Activity = self._get_database_object(database = database).random()
+        _met: tuple = self.methods[0]
+        
+        # LCA object generation will fail for biosphere databases
+        # However, we do not need an LCA object for biosphere databases but only the characterization factors
+        
+        # Create the Brightway2 LCA object from the first activity and method.
+        # This takes a little bit long, and therefore this step is only done once. The object will be reused in the calculation            
+        lca_object: bw2calc.lca.LCA = bw2calc.LCA({_act.key: self.functional_amount}, method = _met)
+        
+        # Calculate inventory once to load all database data
+        lca_object.lci()
+        
+        # Load method data 
+        lca_object.lcia()
+        
+        # Append to dictionary and initialize a dictionary to store the characterized matrices to
+        self.lca_objects[database]: bw2calc.lca.LCA = lca_object
+        self.characterization_matrices[database]: dict = {}
+        
+        # Loop through each method to build the characterization matrices
+        for met in self.methods:
+            
+            # Switch to new method
+            lca_object.switch_method(met)
+            
+            # Extract the characterization matrix and write to dictionary
+            self.characterization_matrices[database][met] = lca_object.characterization_matrix.copy()
+        
+        # Return the lca object
+        return self.lca_objects[database]
+    
+    
+    def _get_characterization_matrix(self, database: str, method: str):
+        
+        # Simply return if already existing
+        if self.characterization_matrices.get(database) is not None:
+            return self.characterization_matrices[database][method]
+
+        # Otherwise, create BW object and matrices
+        self._get_LCA_object(database = database)
+        
+        # Return the matrix
+        return self.characterization_matrices[database][method]
+    
+    
+    
+    def _get_biosphere_dict_as_array(self, database: str) -> np.array:
+        
+        # Simply return if already existing
+        if self.biosphere_dicts_as_arrays.get(database) is not None:
+            return self.biosphere_dicts_as_arrays[database]
+        
+        # Retrieve the lca object
+        lca_object: bw2calc.lca.LCA = self._get_LCA_object(database = database)
+        
+        # Write the biosphere dict as array
+        biosphere_array: np.array = np.array([str(m) for m in lca_object.biosphere_dict.keys()], dtype = "U")
+        
+        # Temporarily store
+        self.biosphere_dicts_as_arrays[database]: np.array = biosphere_array
+        
+        # Return the array
+        return biosphere_array
+    
+    
+    
+    def _get_activity_dict_as_array(self, database: str) -> np.array:
+        
+        # Simply return if already existing
+        if self.activity_dicts_as_arrays.get(database) is not None:
+            return self.activity_dicts_as_arrays[database]
+        
+        # Retrieve the lca object
+        lca_object: bw2calc.lca.LCA = self._get_LCA_object(database = database)
+        
+        # Write the activity dict as array
+        activity_array: np.array = np.array([str(m) for m in lca_object.activity_dict.keys()], dtype = "U")
+        
+        # Temporarily store
+        self.activity_dicts_as_arrays[database]: np.array = activity_array
+        
+        # Return the array
+        return activity_array
+    
+    
+    def _get_element_array(self, element: (str | None | tuple), length: int, dtype: (str | None)) -> np.array:
+        
+        # Simply return if already existing
+        if self.element_arrays.get((element, length, dtype)) is not None:
+            return self.element_arrays[(element, length, dtype)]
+        
+        # Construct an array with only elements and length indicated
+        element_array: np.array = np.array([element] * length, dtype = dtype)
+        
+        # Add the matrix to the temporary dict
+        self.element_arrays[(element, length, dtype)]: np.array = element_array
+        
+        # Return the matrix
+        return element_array
+    
+    
+    def _apply_cut_off_to_structured_array(self, structured_array: np.array, cut_off: (float | None)) -> np.array:
+        
+        # Exclude all values that are 0
+        array: np.array = structured_array[structured_array["value"] != 0]
+        
+        # If no cutoff is specified, simply return the array. We don't need to go on
+        if cut_off is None:
+            return array
+        
+        # If the array is empty, return
+        if len(array) == 0:
+            return array
+        
+        # Temporarily save the last row
+        last: tuple = tuple(array[-1:])
+        
+        # Select (= mask) all values that are above and below 0
+        mask_under_0: np.array = array["value"] < 0
+        mask_over_0: np.array = array["value"] > 0
+        
+        # Retrieve the arrays with values above and below 0, separately
+        under_0: np.array = array[mask_under_0]
+        over_0: np.array = array[mask_over_0]
+        
+        # Identify the limit/treshold from where on values will be excluded
+        # We do the sum and then multiply it with the cut off indicated
+        min_treshold = sum(under_0["value"]) * cut_off
+        max_treshold = sum(over_0["value"]) * cut_off
+        
+        # Select arrays again, only containing the values that are not excluded by the cut off
+        mask_min_treshold = under_0["value"] < min_treshold
+        mask_max_treshold = over_0["value"] > max_treshold
+        
+        # Retrieve the rest amount as a sum of everything that was excluded
+        rest_amount = sum(under_0["value"][~mask_min_treshold]) + sum(over_0["value"][~mask_max_treshold])
+        
+        # Construct a tuple for the rest
+        updated_last: tuple = (last[0][0],
+                               last[0][1],
+                               str(self.rest_key),
+                               None,
+                               rest_amount,
+                               last[0][5]
+                               )
+        # Write the rest as array
+        rest: np.array = np.array([updated_last], dtype = structured_array.dtype)
+        
+        # Add all together
+        constructed = np.concatenate((over_0[mask_max_treshold], under_0[mask_min_treshold], rest), axis = 0)
+        
+        # Return
+        return constructed
+    
+    
+    
+    def _get_structured_array_for_LCI_emission_contribution(self, database: str) -> np.array:
+        
+        # If already existing, simply return
+        if self.structured_arrays_for_emission_contribution.get(database) is not None:
+            return self.structured_arrays_for_emission_contribution[database][None]
+        
+        # Get the biosphere dictionary as an array
+        biosphere_array: np.array = self._get_biosphere_dict_as_array(database = database)
+        
+        # Extract the length of the array, since everything needs to be at this length
+        length_biosphere_array: int = biosphere_array.shape[0]
+        
+        # Construct an array with only the None's and the length of the biosphere array
+        none_array: np.array = self._get_element_array(element = None, length = length_biosphere_array, dtype = object)
+        
+        # Construct an array with the functional amount and the length of the biosphere array
+        functional_amount_array: np.array = self._get_element_array(element = self.functional_amount, length = length_biosphere_array, dtype = "float64")
+        functional_amount_array_dtype = functional_amount_array.dtype
+        
+        # Construct a placeholder array with a random activity key and the length of the biosphere array
+        # Note that storing a tuple in an array would be doable, but we then run into issues converting it back
+        # That's why we cast the tuple to a string first
+        activity_key_array: np.array = self._get_element_array(element = str(self.activities[0].key), length = length_biosphere_array, dtype = "U")
+        
+        # Extract the array type from the inventory
+        inventory_dtype = self._get_LCA_object(database = database).inventory.dtype
+        
+        # Construct a 0 array for the values (this one will be overwritten later)
+        value_array: np.array = np.zeros(length_biosphere_array, dtype = inventory_dtype)
+        
+        # Construct dtypes for the structured array
+        dtype: list[tuple] = [("activity_key", activity_key_array.dtype),
+                              ("functional_amount", functional_amount_array_dtype),
+                              ("flow_key", biosphere_array.dtype),
+                              ("flow_amount", none_array.dtype),
+                              ("value", inventory_dtype),
+                              ("method", none_array.dtype)
+                              ]
+                
+        # Build structured array and add to dictionary
+        self.structured_arrays_for_emission_contribution[database]: dict[(tuple | None), np.array] = {None: np.core.records.fromarrays([activity_key_array,
+                                                                                                                                        functional_amount_array,
+                                                                                                                                        biosphere_array,
+                                                                                                                                        none_array,
+                                                                                                                                        value_array,
+                                                                                                                                        none_array
+                                                                                                                                        ], dtype = dtype)}
+        
+        # Return
+        return self.structured_arrays_for_emission_contribution[database][None]
+    
+    
+    def _get_structured_array_for_LCI_process_contribution(self, database: str) -> np.array:
+        
+        # If already existing, simply return
+        if self.structured_arrays_for_process_contribution.get(database) is not None:
+            return self.structured_arrays_for_process_contribution[database][None]
+        
+        # Get the activity dictionary as an array
+        activity_array: np.array = self._get_activity_dict_as_array(database = database)
+        
+        # Extract the length of the array, since everything needs to be at this length
+        length_activity_array: int = activity_array.shape[0]
+        
+        # Construct an array with only the None's and the length of the activity array
+        none_array: np.array = self._get_element_array(element = None, length = length_activity_array, dtype = object)
+        
+        # Construct an array with the functional amount and the length of the activity array
+        functional_amount_array: np.array = self._get_element_array(element = self.functional_amount, length = length_activity_array, dtype = "float64")
+        functional_amount_array_dtype = functional_amount_array.dtype
+        
+        # Construct a placeholder array with a random activity key and the length of the activity array
+        # Note that storing a tuple in an array would be doable, but we then run into issues converting it back
+        # That's why we cast the tuple to a string first
+        activity_key_array: np.array = self._get_element_array(element = str(self.activities[0].key), length = length_activity_array, dtype = "U")
+        
+        # Extract the array type from the inventory
+        inventory_dtype = self._get_LCA_object(database = database).inventory.dtype
+        
+        # Construct a 0 array for the values (this one will be overwritten later)
+        value_array: np.array = np.zeros(length_activity_array, dtype = inventory_dtype)
+        
+        # Construct dtypes for the structured array
+        dtype: list[tuple] = [("activity_key", activity_key_array.dtype),
+                              ("functional_amount", functional_amount_array_dtype),
+                              ("flow_key", activity_array.dtype),
+                              ("flow_amount", none_array.dtype),
+                              ("value", inventory_dtype),
+                              ("method", none_array.dtype)
+                              ]
+                
+        # Build structured array and add to dictionary
+        self.structured_arrays_for_process_contribution[database]: dict[(tuple | None), np.array] = {None: np.core.records.fromarrays([activity_key_array,
+                                                                                                                                       functional_amount_array,
+                                                                                                                                       activity_array,
+                                                                                                                                       none_array,
+                                                                                                                                       value_array,
+                                                                                                                                       none_array
+                                                                                                                                       ], dtype = dtype)}
+        
+        # Return
+        return self.structured_arrays_for_process_contribution[database][None]
+        
+        
+        
+    def _get_structured_array_for_LCIA_emission_contribution(self, database: str, method: tuple) -> np.array:
+        
+        # If already existing, simply return
+        if self.structured_arrays_for_emission_contribution.get(database, {}).get(method) is not None:
+            return self.structured_arrays_for_emission_contribution[database][method]
+        
+        # Retrieve or build the initial structured emission array
+        structured_LCI_emission_array: np.array = self._get_structured_array_for_LCI_emission_contribution(database = database).copy() # !!! We need this copy right now, but it slows calculation down. Alternative?
+    
+        # Overwrite the method array (None's) with the method
+        structured_LCI_emission_array["method"]: np.array = self._get_element_array(element = str(method), length = len(structured_LCI_emission_array["value"]), dtype = "U")
+    
+        # Add temporarily
+        self.structured_arrays_for_emission_contribution[database][method]: np.array = structured_LCI_emission_array.copy() 
+        
+        # Return
+        return structured_LCI_emission_array
+    
+    
+    
+    def _get_structured_array_for_LCIA_process_contribution(self, database: str, method: tuple) -> np.array:
+        
+        # If already existing, simply return
+        if self.structured_arrays_for_process_contribution.get(database, {}).get(method) is not None:
+            return self.structured_arrays_for_process_contribution[database][method]
+        
+        # Retrieve or build the initial structured process array
+        structured_LCI_process_array: np.array = self._get_structured_array_for_LCI_process_contribution(database = database).copy() # !!! We need this copy right now, but it slows calculation down. Alternative?
+    
+        # Overwrite the method array (None's) with the method
+        structured_LCI_process_array["method"]: np.array = self._get_element_array(element = str(method), length = len(structured_LCI_process_array["value"]), dtype = "U")
+    
+        # Add temporarily
+        self.structured_arrays_for_process_contribution[database][method]: np.array = structured_LCI_process_array
+        
+        # Return
+        return self.structured_arrays_for_process_contribution[database][method]
+    
+    
+    
+    # Function to retrieve the exchanges of an activity
+    def _get_exchanges(self,
+                      activity_key: tuple[str, str],
+                      activity_amount: float,
+                      level: (int | float)) -> tuple[tuple[tuple[str, str], float, (float | int)]]:
+        
+        # Try to retrieve first from temporary dictionary and if successful directly return
+        if self._temporary_key_to_exchanges_mapping.get(activity_key) is not None:
+            
+            # Directly return
+            return tuple([(m[0], m[1] * activity_amount, level) for m in self._temporary_key_to_exchanges_mapping[activity_key]])
+        
+        # Retrieve activity
+        act: bw2data.backends.peewee.proxies.Activity = self._get_database_object(database = activity_key[0]).get(activity_key[1])
+        
+        # Retrieve list of exchanges
+        exchanges: bw2data.backends.pewee.proxies.Exchanges = act.exchanges()
+        
+        # Check the length of the exchanges list
+        if len(exchanges) == 0:
+            
+            # If it is 0, the current activity is of type biosphere. We return an empty list
+            return ()
+        
+        # Get the production amount from the list of exchanges
+        production_amount: list[float] = [m["amount"] for m in exchanges if m["type"] == "production"]
+        
+        # Raise error if no or more than one production exchange was found.
+        if len(production_amount) != 1:
+            raise ValueError("The list of exchanges for activity '{}' contains {} production exchange(s).".format(activity_key, len(production_amount)))
+        
+        # Calibrate exchange values to 1 activity amount
+        exchanges_for_1_activity_amount: list[tuple] = [(m["input"], (1 / production_amount[0] * m["amount"]) if production_amount != 0 else 0) for m in exchanges if m["type"] != "production"]
+        
+        # Add temporarily
+        self._temporary_key_to_exchanges_mapping[activity_key]: list[tuple] = exchanges_for_1_activity_amount
+        
+        # Return
+        return tuple([(m[0], m[1] * activity_amount, level) for m in self._temporary_key_to_exchanges_mapping[activity_key]])
+        
+    
+    
+    
+    # Support function to extract exchanges of an activity based on a specific level
+    def _extract_LCI_exchanges_of_activity_at_certain_level(self,
+                                                            activity_key: bw2data.backends.peewee.proxies.Activity,
+                                                            level: int) -> list[dict]:
+        
+        # Define the starting level
+        current_level: int = 0
+
+        # Initialize a new key to write exchange keys to that should be calculated in the next round
+        exchanges_at_level: dict = {current_level: ((activity_key, self.functional_amount, 0),)}
+        
+        # Extract exchanges as long/as many times as there are levels
+        while current_level < level:
+
+            # Extract all the relevant keys at the current level
+            current_exchanges: tuple[tuple, float] = exchanges_at_level[current_level]
+            
+            # Initialize a new list for the current level
+            exchanges_at_level[current_level + 1]: tuple = ()
+            
+            # Loop through each current exchange key and amount
+            for current_key, current_amount, respective_level in current_exchanges:
+                
+                # Check if the level of the current exchange matches the current level where we are, otherwise we don't need to go on and can simply move the exchange to the next round
+                if respective_level < current_level:
                     
-                    # If yes, then we can keep the value and write it to the list
-                    return_list += [o]
-                else:
-                    # Otherwise, we omit the data item and add the current score to the rest
-                    rest += o["Score"]
-            
-            # If the rest value has been changed, write it
-            if rest != 0:
-                
-                # Write to list
-                return_list += [{"Activity_Input": Scores[idx_I][idx_II]["Activity_Input"], "Score": rest, "Input": "Rest", "Method": Scores[idx_I][idx_II]["Method"], }]
-    
-    return return_list
-
-# Function to rename the keys of Brightway2 database dictionary
-def prepare_database(extracted: dict, additional_name_fragment: str, start: int):
-    
-    # Specify the mapping dictionary
-    internal_mapping = {# "type": {"new_name": "type", "idx": start + 2},
-                        "name": {"new_name": "name", "idx": start + 3},
-                        "SimaPro_name": {"new_name": "SimaPro_name", "idx": start + 4},
-                        "categories": {"new_name": "categories", "idx": start + 5},
-                        "inventory_category": {"new_name": "categories", "idx": start + 6},
-                        "location": {"new_name": "location", "idx": start + 7},
-                        "unit": {"new_name": "unit", "idx": start + 9}}
-    
-    # Initialise empty dictionary
-    return_dict = {}
-    
-    # Loop through each key/value pair (= dictionary of the inventory) in the loaded Brightway2 database
-    for k, v in extracted.items():
-        
-        # Extract the code and database from the inventory key
-        code = k[1]
-        database = k[0]
-        
-        # Add the code and the database to the new item with the correct name
-        curr = {str(start + 1) + "_" + additional_name_fragment + "code": code,
-                str(start + 0) + "_" + additional_name_fragment + "database": database}
-        
-        # Loop through all the key/value pairs of the inventory dictionary
-        for k2, v2 in v.items():
-            
-            # Try to add a new name
-            # This will only be possible, if the current key is mapped in the internal mapping file
-            # Otherwise, a key error is raised and nothing is done. In that case, the key will be omitted and not be mapped
-            try:
-                # Extract the new name based on the old name
-                new_name = str(internal_mapping[k2]["idx"]) + "_" + additional_name_fragment + internal_mapping[k2]["new_name"]
-                
-                # Add the new name with the current value to the current new dictionary
-                curr[new_name] = v2
-            
-            except:
-                # Otherwise, pass
-                pass
-        
-        # Add the mapped inventory to the new dictionary, which will be returned
-        return_dict[k] = curr
-        
-    return return_dict
-        
-# Create a mapping for each database
-def load_mappings(database_names: list, progress_bar: bool = True):
-    
-    # Save time at the start
-    time_start = datetime.datetime.now()
-    
-    # Initialise empty dictionaries
-    loaded_activity = {}
-    loaded_flow = {}
-    
-    # Prepare iterator, either with or without progress bar
-    # Depending on what is specified
-    if progress_bar:
-        
-        # Wrap progress bar around iterator
-        i_database_names = hp.progressbar(database_names, prefix = "\nLoad Brightway2 database mappings ...")
-    else:
-        # Do nothing
-        i_database_names = database_names
-    
-    # Loop through each database name
-    for idx, database_name in enumerate(i_database_names):
-        
-        # Extract the database inventories as dictionaries to a list
-        extracted_orig = [m.as_dict() for m in bw.Database(database_name)]
-        
-        # Make a dictionary with the database/code tuples as keys and the inventory dictionary as value
-        extracted = {(m["database"], m["code"]): m for m in extracted_orig}
-        
-        # Transform the extracted dictionaries with the function 'prepare_database' and add to the initialized dictionaries
-        loaded_activity |= prepare_database(extracted, "Activity_", 0)
-        loaded_flow |= prepare_database(extracted, "Flow_", 10)
-    
-    # Print statements to console, if specified
-    if progress_bar:
-        print("    " + str(len(database_names)) + " databases loaded")
-        print("    Loading time: " + str(round((datetime.datetime.now() - time_start).seconds, 0)) + " sec")
-    
-    return loaded_activity, loaded_flow
-
-# Rearrange columns of a pandas dataframe based on a pattern
-# '2_ColA' and '1_ColA' will be arranged into --> '1_ColA' and '2_ColA'
-def rearrange_columns(columns):
-    
-    # Pattern to extract the number and the column name
-    pat = "^(?P<idx>[0-9]+)\_(?P<col>.*)"
-    
-    # Match the pattern to the column names and extract to dictionary
-    matches = [re.match(pat, m).groupdict() for m in columns]
-    
-    # Sort the column names based on the number indicated
-    col_tuples = sorted([(m["idx"], m["col"]) for m in matches], key = lambda x: int(x[0]))
-    
-    # Return a list with the new names
-    return [str(m[0]) + "_" + str(m[1]) for m in col_tuples]
-
-# Rename the column names
-# Extract the first part (= number) and the second part (= name) and only give back the name
-def rename_columns(columns):
-    
-    # Pattern to extract the number and the column name
-    pat = "^(?P<idx>[0-9]+)\_(?P<col>.*)"
-    
-    # Match the pattern to the column names and extract to dictionary
-    matches = [re.match(pat, m).groupdict() for m in columns]
-    
-    # Sort the column names based on the number indicated
-    col_tuples = sorted([(m["idx"], m["col"]) for m in matches], key = lambda x: int(x[0]))
-    
-    # Return a dictionary of the old and the new name
-    return {str(m[0]) + "_" + str(m[1]): m[1] for m in col_tuples}
-    
-
-
-#%% Function 'run_LCA' calculation
-
-def run_LCA(activities: list,
-            methods: list,
-            write_LCI_exchanges: bool = True,
-            write_LCI_exchanges_as_emissions: bool = True,
-            write_LCIA_impacts_of_activity_exchanges: bool = True,
-            write_LCIA_process_contribution: bool = True,
-            write_LCIA_emission_contribution: bool = True,
-            write_characterization_factors: bool = False,
-            cutoff_process: (int | float) = 0.001,
-            cutoff_emission: (int | float) = 0.001,
-            write_results_to_file: bool = True,
-            local_output_path: (pathlib.Path | None) = None,
-            filename_without_ending: (str | None) = None,
-            use_timestamp_in_filename: bool = True,
-            print_progress_bar: bool = True):
-    
-    """ A function that does a fast and efficient LCA calculation in Brightway2
-    Only the list of LCI activities and the LCIA methods need to be supplied to the function.
-    'write' parameters state whether certain additional information from impact assessment should be provided or not.
-    
-
-    Parameters
-    ----------
-    activities : list
-        A list of LCI inventories (in Brightway2 format, as Pewee object) for which impacts should be calculated.
-        
-    methods : list
-        A list of LCIA methods (in Brightway2 format, as tuple) which should be used for impact assessment of the inventories.
-    
-    write_LCI_exchanges : bool, optional
-        If True, the inputs (technosphere) and emissions (biosphere) for each of the activities is returned. The default is True.
-    
-    write_LCI_exchanges_as_emissions : bool, optional
-        If True, the (biosphere) emissions for each of the activities is returned. The technosphere inputs are reduced to the respective biosphere emissions first. The default is True.
-    
-    write_LCIA_impacts_of_activity_exchanges : bool, optional
-        If True, the impacts of all direct exchanges (biosphere and technosphere) of an activity are calculated. The default is True.
-        
-    write_LCIA_process_contribution : bool, optional
-        If True, the process contribution (= all processes contributing to an LCA) is returned. The default is True.
-        
-    write_LCIA_emission_contribution : bool, optional
-        If True, the emission contribution (= all emissions contributing to an LCA) is returned. The default is True.
-        
-    write_characterization_factors : bool, optional
-        If True, returns a list of all characterization factors of used 'methods'. The default is False.
-        
-    cutoff_process : int | float, optional
-        If specified and 'write_LCIA_process_contribution' is True, will cut down the list of processes and only show the processes which contribute more than the (impact * cut-off) to the overall impact. The default value is 0.001.
-        
-    cutoff_emission : int | float, optional
-        If specified and 'write_LCIA_process_contribution' is True, will cut down the list of processes and only show the processes which contribute more than the (impact * cut-off) to the overall impact. The default value is 0.001.
-    
-    write_results_to_file : bool, optional
-        Specifies whether the calculated results should be written to CSV or XLSX file. The default is True (a file is written).
-    
-    local_output_path : pathlib.Path | None, optional
-        Specifies the path, where the output file should be written to. The default is None. If no path is specified (= None), the local Brightway2 folder will be used to save results.
-        
-    filename_without_ending : str, optional
-        The filename(s) of the Excel or CSV files where results will be written to. The default is None. If not specified (= None), the timestamp plus an additional name fragment '_LCA' will be used as name.
-        
-    use_timestamp_in_filename : bool, optional
-        Mark whether a timestamp should be used in the resulting filename. The default is True.
-    
-    print_progress_bar : bool, optional
-        If True, progress bars will be printed which show the status of the calculation. The default is True.
-
-    save_csv_for_visual_tool : bool, optional
-        If True, will save a csv per activity in 'activities' in local_output_path suitable to be loaded in the visual tool 
-        
-    Returns
-    -------
-    results_final : dict
-        A dictionary with all the results of the LCIA. Additionally, the Pandas Dataframe of the results is written, either as a XLSX or as a CSV (depending on the row size).
-
-    """
-    
-    # Check function input type
-    hp.check_function_input_type(run_LCA, locals())
-    
-    # Check if activities are all Pewee objects
-    check_activities = [m for m in activities if not isinstance(m, bw2data.backends.peewee.proxies.Activity)]
-    if check_activities != []:
-        raise ValueError("Input variable 'activities' needs to be a list of only Pewee objects.")
-    
-    # Check if the cutoff is between 0 and 1. If not, the input variable is wrong and an error is raised.
-    if cutoff_process < 0 or cutoff_process > 1:
-        raise ValueError("The input variable 'cutoff_process' has a wrong value. Allowed are values between 0 and 1")
-    
-    # Check if the cutoff is between 0 and 1. If not, the input variable is wrong and an error is raised.
-    if cutoff_emission < 0 or cutoff_emission > 1:
-        raise ValueError("The input variable 'cutoff_emission' has a wrong value. Allowed are values between 0 and 1")
-    
-    # Create a path if not provided by the function
-    # If not provided, the local Brightway2 folder will be used to save results
-    if local_output_path is None:
-        local_output_path = pathlib.Path(bw.projects.output_dir)
-    
-    # Extract current time
-    current_time = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    
-    # Create filename if not provided
-    if filename_without_ending is None:
-        
-        # Either use or do not use the timestamp in the filename
-        # depending on how specified in the function input
-        if use_timestamp_in_filename:
-            
-            # Give file name
-            filename = current_time + "_LCA"
-            
-        else:
-            # Give file name
-            filename = "LCA"
-    
-    else:
-        # The same as above
-        if use_timestamp_in_filename:
-            
-            # Give file name
-            filename = current_time + "_" + filename_without_ending
-            
-        else:
-            # Give filename
-            filename = filename_without_ending
-    
-    # Initialise an empty dictionary where results from the LCIA calculation will be stored
-    results = {
-        "LCI_exchanges": [],
-        "LCI_exchanges_reduced_to_biosphere_flows": [],
-        "LCIA_activity_scores": [],
-        "LCIA_exchanges_scores": [],
-        "LCIA_contribution_of_top_processes": [],
-        "LCIA_contribution_of_top_emissions": []
-        }
-    
-    # The functional unit is defined as 1
-    functional_unit = 1
-    
-    # Extract the UUID's (= keys) from all activities
-    activities_keys = [m.key for m in activities]
-    
-    # Extract the UUID's (= keys) from all exchanges (inputs/emissions)
-    # The amount of the exchange is adjusted to the functional unit amount specified before
-    if write_LCI_exchanges or write_LCIA_impacts_of_activity_exchanges:
-        
-        # Initialie list
-        all_exchanges_keys = []
-        
-        # Loop through all activities to extract all exchanges
-        for act in activities:
-            
-            # Initialise list
-            exchange_info = []
-            
-            # Extract production amount directly from the inventory
-            prod_amount = act.get("production amount")
-            
-            # If we fail to find the production amount from the inventory, go to the production exchange and extract it from there
-            if prod_amount is None:
-                
-                # Extract all production amounts from the production exchanges
-                prod_amounts = [n["amount"] for n in act.exchanges() if n["type"] == "production"]
-                
-                # Raise error if no production exchange was identified
-                assert len(prod_amounts) == 1, str(len(prod_amounts)) + " production exchange(s) found. Valid is to have exactly one production exchange."
-                
-                # Use the only production exchange amount
-                prod_amount = prod_amounts[0]
-            
-            # Raise error if we have not found an production amount
-            assert prod_amount is not None, "No production exchange(s) found. Valid is to have exactly one production exchange."
-            
-            # Loop through all exchanges and adapt amounts
-            for exc in act.exchanges():
-                
-                # Go on, if the current exchange is of type production. In that case we don't want to add it.
-                if exc["type"] == "production":
-                    continue
+                    # Simply move the exchange to the next round without searching
+                    exchanges_at_level[current_level + 1] += ((current_key, current_amount, respective_level),)
                 
                 else:
-                    # Adapt amount with the production exchange amount and add to list
-                    exchange_info += [{"type": exc["type"],
-                                       "amount": exc["amount"] / prod_amount if prod_amount != 0 else 0,
-                                       "input": exc["input"]}]
-            
-            # Add to variable
-            all_exchanges_keys += [exchange_info]
+                    # Extract all exchanges that come next for the current exchange
+                    next_exchanges: tuple[tuple] = self._get_exchanges(activity_key = current_key,
+                                                                       activity_amount = current_amount,
+                                                                       level = current_level + 1)
                     
-        
-    # Write the exchanges to the results dictionary
-    # But only if specified
-    if write_LCI_exchanges:
-        results["LCI_exchanges"] = [[{"Activity_Input": activities_keys[idx],
-                                      "Input": n["input"],
-                                      "Flow_type": n["type"], 
-                                      "Flow_amount": n["amount"],
-                                      "Method": None} for n in m] for idx, m in enumerate(all_exchanges_keys)]
-        
-    
-    # Extract the number/length of the activities
-    # This information will only be used for printing information to the console
-    act_length = len(activities_keys)
-    
-    ###############################
-    ##### Block 2 ##### (start) ###
-    # -> Preload all data needed for the LCIA calculation (matrices, activity and biosphere mapping dictionaries and characterization factors)
-    
-    # Print statement
-    print("\n-----\nInitializing calculation")
-    
-    # Extract all the databases that are used in the inventories
-    # all_databases_used = list(set([m[0] for m in activities_keys + [nn[2] for n in all_exchanges_keys for nn in n]]))
-    all_databases_used = list(bw.databases)
-    
-    # Initialise empty dictionaries to be filled with preloaded data
-    characterization_matrices = {}
-    activity_dicts = {}
-    biosphere_dicts = {}
-    characterization_factors = {}
-    lca_objects = {}
-    
-    # Loop through each database used
-    for database in all_databases_used:
-        
-        # Initialise new dictionaries in already existing dictionaries
-        characterization_matrices[database] = {m: {} for m in methods}
-        activity_dicts[database] = {m: {} for m in methods}
-        biosphere_dicts[database] = {m: {} for m in methods}
-        characterization_factors[database] = {m: {} for m in methods}
-        
-        try:
-            # LCA object generation will fail for biosphere databases
-            # However, we do not need an LCA object for biosphere databases but only the characterization factors
+                    # If no next exchanges have been found, add the current exchange
+                    if len(next_exchanges) == 0:
                         
-            # Create the Brightway2 LCA object from the first activity and method.
-            # This takes a little bit long, and therefore this step is only done once. The object will be reused in the calculation            
-            lca_object = bw.LCA({[m.key for m in bw.Database(database)][0]: 1}, method = methods[0])
-            
-            # Calculate inventory once to load all database data
-            lca_object.lci()
-            
-            # Keep the LU factorized matrices for faster calculations
-            lca_object.decompose_technosphere()
-            
-            # Load method data 
-            lca_object.lcia()
-            
-            # Append to dictionary
-            lca_objects[database] = lca_object
-        
-        # Raise error if the database is not square
-        except NonsquareTechnosphere:
-            
-            # Export inventory, where error appeared
-            # Used for displaying additional information in the error statement
-            inv_for_error = dict([m for m in bw.Database(database)][0].as_dict(), **{"exchanges": [n.as_dict() for n in [nn for nn in bw.Database(database)][0].exchanges()]})
-            
-            # Raise error
-            raise NonsquareTechnosphere("'code' and 'database' parameter of inventory (= 'ds') probably don't match the parameter 'input' of the production exchange (= 'exc'):\n\ninventory code: " + inv_for_error.get("code", "code parameter not existent") + "\ninventory database: " + inv_for_error.get("database", "database parameter not existent") + "\n\nproduction exchange input (first item = database, second item = code): " + str([m for m in inv_for_error.get("exchanges", {"input": "no production exchange available", "__error__": True, "type": "nothing"}) if m.get("__error__") is not None and m["type"] == "production"][0].get("input")))
-        
-        # If the biosphere is empty, that means that an error has occured during setting up the inventories
-        # An error is raised
-        except EmptyBiosphere:
-            
-            # Export inventory, where error appeared
-            # Used for displaying additional information in the error statement
-            inv_for_error = dict([m for m in bw.Database(database)][0].as_dict(), **{"exchanges": [n.as_dict() for n in [nn for nn in bw.Database(database)][0].exchanges()]})
-            
-            # Raise error
-            raise EmptyBiosphere("LCA can not be done if no biosphere flows are attributed to the inventory. Problematic inventory (... and possibly others):\n\ncode: " + inv_for_error["code"] + "\ndatabase: " + inv_for_error["database"] + "\nname: " + inv_for_error["name"] + "\nlocation: " + inv_for_error["location"] + "\nunit: " + inv_for_error["unit"])
-        
-        # If all arrays are empty, that means that the current database is a biosphere database
-        # Therefore, we do not need to build a LCA object but only save the characterization factors
-        except AllArraysEmpty:
-            
-            # Extract the characterization factors for all methods
-            characterization_factors[database] = {m: {n[0]: n[1] for n in bw.Method(m).load()} for m in methods}
-            continue
-        
-        # Loop through each method
-        for method in methods:
-            
-            # Use the same LCA object but switch the method
-            lca_object.switch_method(method)
-            
-            # Extract the characterized matrices
-            characterization_matrices[database][method] = lca_object.characterization_matrix.copy()
-            
-            # Extract the mapping dictionaries
-            # ... for the activities (technosphere)
-            activity_dicts[database][method] = [k for k, v in lca_object.activity_dict.items()]
-            
-            # ... for the emissions (biosphere)
-            biosphere_dicts[database][method] = [k for k, v in lca_object.biosphere_dict.items()]
-            
-            # Extract the characterization factors of the current method
-            characterization_factors[database][method] = {m[0]: m[1] for m in bw.Method(method).load()}
-        
-    ##### Block 2 ##### (end) #####
-    ###############################
-    
-    # Print statement
-    print("\n-----\nCalculating results")
-    
-    ###############################
-    ##### Block 3 ##### (start) ###
-    # -> For each activity, run the impact assessment
-    
-    # Save the time at the beginning
-    time_act = datetime.datetime.now()
-    
-    # To speed up the calculation, save already calculated results in a temporary dictionary
-    # Those results can then be reused.
-    # For that, initialise an empty dictionary
-    temporary_saved_scores = {}
-    
-    # Prepare iterator, either with or without progress bar
-    # Depending on what is specified
-    if print_progress_bar:
-        
-        # Wrap progress bar around iterator
-        i_activities_keys = hp.progressbar(activities_keys, prefix = "\nCalculate LCIA of activities ...")
-    else:
-        # Do nothing
-        i_activities_keys = activities_keys
-    
-    # Loop through each activity individually
-    for first, activity in enumerate(i_activities_keys):
-        
-        # Initialise lists for temporary results
-        pack_I = []
-        pack_II = []
-        pack_III = []
-        
-        # Extract the database of the exchange from the key (= first item of the key is always the database)
-        database = activity[0]
-        
-        # Extract the lca object
-        lca_activity = lca_objects[database]
-        
-        # For each activity, at the beginning, the LCI calculation has to be redone
-        lca_activity.redo_lci({activity: functional_unit})
-        
-        # Write the (reduced) biosphere emissions to the results dictionary
-        # But only if specified
-        if write_LCI_exchanges_as_emissions:
-            results["LCI_exchanges_reduced_to_biosphere_flows"] += [[dict(m, **{"Activity_Input": activity}) for m in reduce_inventory_to_biosphere_emissions(lca_activity.inventory, biosphere_dicts[database][methods[0]])]]
-        
-        # Loop through each method individually
-        for second, (method, matrix) in enumerate(characterization_matrices[database].items()):
-            
-            # Characterize the current matrix of the LCI with the matrix of the method
-            characterized_matrix = matrix * lca_activity.inventory
-            
-            # Check whether the current activity and method combination has already been calculated
-            # If yes, the result has already been saved in the 'temporary_saved_scores' dictionary
-            if temporary_saved_scores.get((method, activity)) is not None:
+                        # Add current exchange
+                        exchanges_at_level[current_level + 1] += ((current_key, current_amount, respective_level),)
+                    else:
+                        # Otherwise, add the new exchanges
+                        exchanges_at_level[current_level + 1] += next_exchanges
                 
-                # If yes, simply save/add the already existing result
-                pack_I += [{"Method": method, "Activity_Input": activity, "Score": temporary_saved_scores[(method, activity)]}]
+            # Check if we arrived at the end
+            if current_level >= level:
+                break
+                
             else:
-                # Otherwise, sum up the characterized matrix (= total score)
-                characterized_matrix_sum = characterized_matrix.sum()
-                
-                # Simply, save/add the newly calculated result
-                pack_I += [{"Method": method, "Activity_Input": activity, "Score": characterized_matrix_sum}]
-                
-                # Write the newly calculated result to the temporary dictionary
-                temporary_saved_scores[(method, activity)] = characterized_matrix_sum
-              
-            # Calculate the process contribution. Use the predefined function together with the characterized matrix
-            # Use the activity dict for the mapping
-            # But only if specified
-            if write_LCIA_process_contribution:
-                pack_II += [[dict(m, **{"Method": method, "Activity_Input": activity}) for m in top_processes_by_name(characterized_matrix, activity_dicts[database][method])]]
+                # Raise iterator
+                current_level += 1
+        
+        # Initialize a new list to store final exchanges to
+        exchanges_at_level_cleaned: dict = {}
+        
+        # Loop through each exchange
+        for flow_key, flow_amount, level in exchanges_at_level[max(list(exchanges_at_level.keys()))]:
             
-            # Calculate the emission contribution. Use the predefined function together with the characterized matrix
-            # Use the biosphere dict for the mapping
-            # But only if specified
-            if write_LCIA_emission_contribution:
-                pack_III += [[dict(m, **{"Method": method, "Activity_Input": activity}) for m in top_emissions_by_name(characterized_matrix, biosphere_dicts[database][method])]]
-                        
-        # Add the current results to the results dictionary
-        results["LCIA_activity_scores"] += [pack_I]
-        
-        # Write but only if specified
-        if write_LCIA_process_contribution:
-            results["LCIA_contribution_of_top_processes"] += [pack_II]
-        
-        # Write but only if specified
-        if write_LCIA_emission_contribution:
-            results["LCIA_contribution_of_top_emissions"] += [pack_III]
+            # Compile the ID tuple
+            ID: tuple = (
+                activity_key,
+                self.functional_amount,
+                flow_key
+                )
             
-        ##### Block 3 ##### (end) #####
-        ###############################
-    
-    # Print additional progress bar statement to console, if specified
-    if print_progress_bar:
-        
-        # Summary of the amount of calculated impacts
-        print("    Calculated " + str(act_length * len(methods)) + " impacts (from " + str(act_length) + " inventories, " + str(len(methods)) + " methods)")
-        
-        # Summary of the calculation time
-        print("    Calculation time: " + str(round((datetime.datetime.now() - time_act).seconds, 0)) + " sec")
-
-    
-    ###############################
-    ##### Block 4 ##### (start) ###
-    # -> For each immediate exchange of an activity, run the impact assessment
+            # Initialize new key
+            if exchanges_at_level_cleaned.get(ID) is None:
+                exchanges_at_level_cleaned[ID]: float = float(0)
+            
+            # Add the amount
+            exchanges_at_level_cleaned[ID] += flow_amount
+            
+        # Return
+        return [k + (v, None, None) for k, v in exchanges_at_level_cleaned.items()]
     
     
-    # Only calculate if specified
-    if write_LCIA_impacts_of_activity_exchanges:
         
-        # Save the time at the beginning
-        time_exc = datetime.datetime.now()
+    def calculate(self,
+                  calculate_LCIA_scores: bool = True,
+                  extract_LCI_exchanges: bool = False,
+                  extract_LCI_emission_contribution: bool = False,
+                  extract_LCI_process_contribution: bool = False,
+                  calculate_LCIA_scores_of_exchanges: bool = False,
+                  calculate_LCIA_emission_contribution: bool = False,
+                  calculate_LCIA_process_contribution: bool = False):
         
-        # Prepare iterator, either with or without progress bar
-        # Depending on what is specified
-        if print_progress_bar:
+        # Add an instance where results will be saved to
+        self.results_raw: dict = {self.name_LCIA_scores: [],
+                                  self.name_LCI_exchanges: [],
+                                  self.name_LCI_emission_contributions: [],
+                                  self.name_LCI_process_contributions: [],
+                                  self.name_LCIA_immediate_scores: [],
+                                  self.name_LCIA_emission_contributions: [],
+                                  self.name_LCIA_process_contributions: []
+                                  }
+        
+        # Save time when calculation starts
+        if self.progress_bar:
+            start_round_1: datetime.datetime = datetime.datetime.now()
+        
+        # Retrieve the combinations that should be calculated
+        activities: list = self.activities
+        
+        # Check if progress bar should be printed to console
+        if self.progress_bar:
             
             # Wrap progress bar around iterator
-            i_all_exchanges_keys = hp.progressbar(all_exchanges_keys, prefix = "\nCalculate LCIA of immediate exchanges ...")
-        else:
-            # Do nothing
-            i_all_exchanges_keys = all_exchanges_keys
+            activities: list = hp.progressbar(activities, prefix = "\nCalculate ...")
         
-        # Loop through all exchanges
-        for first, exchanges in enumerate(i_all_exchanges_keys):
+        # Loop through all activities
+        for act in activities:
             
-            # Initialise a list, where calculated impacts of the exchanges are stored
-            immediate_exchange_scores = []
+            # Extract the activity key
+            activity_key: tuple[str, str] = act.key
+            
+            # First get the database the activity belongs to
+            database: str = activity_key[0]
 
-            # Loop through each exchange of the current activity
-            # for exchange_type, exchange_amount, exchange in exchanges:
-            for exc in exchanges:
+            # This block is needed for any calculation
+            # We at least need
+            # ... to get 1) the BW object,
+            lca_object: bw2calc.lca.LCA = self._get_LCA_object(database = database)
+
+            # ... to redo 2) the inventory matrix (which takes quite some time)
+            lca_object.redo_lci({act: self.functional_amount})
+            
+            # We then extract the inventory matrix
+            inventory: np.matrix = lca_object.inventory
+            
+            # Extract LCI exchanges, if specified
+            # We also need to extract the exchanges if we calculate the immediate scores
+            if any((extract_LCI_exchanges, calculate_LCIA_scores_of_exchanges)):
                 
-                # Write to variables
-                exchange_type, exchange_amount, exchange = exc["type"], exc["amount"], exc["input"]
+                # Extract the LCI exchanges
+                LCI_exchanges_at_level: list[tuple] = self._extract_LCI_exchanges_of_activity_at_certain_level(activity_key = activity_key, level = self.exchange_level)
                 
-                # Extract the database of the exchange from the key (= first item of the key is always the database)
-                database = exchange[0]
+                # Add
+                if extract_LCI_exchanges:
+                    self.results_raw[self.name_LCI_exchanges] += LCI_exchanges_at_level
+            
+            
+            # If we need to do any LCIA calculation, we need to do the following block
+            # This however will only be done for LCIA score calculation, LCIA emission contribution and LCIA process contribution
+            if any([calculate_LCIA_scores, calculate_LCIA_emission_contribution, calculate_LCIA_process_contribution]):
                 
-                # If the exchange is of type technosphere, impacts need to be calculated through the Brigtway2 LCA object
-                if exchange_type in ["technosphere", "substitution"]:
+                # Initialize a temporary dictionary to store the characterized matrices to
+                characterized_matrices: dict = {}
+                
+                # Loop through each method and create the characterized matrices by multiplying the inventory matrix with the 
+                for met in self.methods:
                     
-                    # Extract the lca object
-                    lca_activity = lca_objects[database]
+                    # Build or simply get the matrix
+                    matrix = self._get_characterization_matrix(database = database, method = met)
                     
-                    # Re do the LCI calculation using the new exchange
-                    lca_activity.redo_lci({exchange: exchange_amount})
+                    # Multiply the matrices
+                    characterized_matrices[met] = (matrix * inventory)
+            
+            # If LCIA scores are calculated, go on
+            if calculate_LCIA_scores:
                 
-                # Loop through each method and calculate the impacts
-                for second, (method, matrix) in enumerate(characterization_matrices[database].items()):
+                # Loop through each characterized matrix and method to get the sum/LCIA score
+                for met, characterized_matrix in characterized_matrices.items():
                     
-                    # Calculation differs depending on the type of the exchange
-                    # Either 'technosphere'/'substitution' or 'biosphere'
-                    if exchange_type in ["technosphere", "substitution"]:
+                    # The score is simply the sum of the matrix
+                    score: float = characterized_matrix.sum()
+                    
+                    # The ID tuple is always of length 5!
+                    ID: tuple = (
+                        act.key, # Key of the current activity
+                        self.functional_amount, # The amount that was calculated
+                        None, # Flow key, not used here
+                        None, # Flow amount, not used here
+                        score, # The calculated impact assessment result
+                        met # The method we calculated the result for
+                    ) 
+                    
+                    # Add to list in the result dictionary
+                    self.results_raw[self.name_LCIA_scores] += [ID]
+                    
+                    # We add the calculated score to a temporary dict, with demand 1
+                    # This because we might use it further below
+                    if calculate_LCIA_scores_of_exchanges:
                         
-                        # Use the LCA object to calculate impacts for technosphere exchanges
-                        # Apply the same logic as above
-                        # If impacts have already been calculated, use already calculated impact results
-                        if temporary_saved_scores.get((method, exchange)) is not None:
-                            immediate_exchange_scores += [{"Flow_type": exchange_type, "Activity_Input": activities_keys[first], "Method": method, "Input": exchange, "Score": temporary_saved_scores[(method, exchange)] * exchange_amount, "Flow_amount": exchange_amount}]
-                        else:
-                            # Otherwise, make the the characterized matrix and sum it up (= total score)
-                            exchange_score = (matrix * lca_activity.inventory).sum()
-                            immediate_exchange_scores += [{"Flow_type": exchange_type, "Activity_Input": activities_keys[first], "Method": method, "Input": exchange, "Score": exchange_score, "Flow_amount": exchange_amount}]
+                        # Check if activity key is already temporarily stored
+                        if self._temporary_score_results.get(activity_key) is None:
                             
-                            if exchange_amount != 0:
-                                temporary_saved_scores[(method, exchange)] = functional_unit / exchange_amount * exchange_score
-                    
-                    # If the type is 'biosphere'
-                    elif exchange_type == "biosphere":
+                            # If not, initialize new dictionary
+                            self._temporary_score_results[activity_key]: dict = {}
                         
-                        # Use the results if already provided
-                        if temporary_saved_scores.get((method, exchange)) is not None:
-                            immediate_exchange_scores += [{"Flow_type": exchange_type, "Activity_Input": activities_keys[first], "Method": method, "Input": exchange, "Score": temporary_saved_scores[(method, exchange)] * exchange_amount, "Flow_amount": exchange_amount}]
-                        else:
-                            # Otherwise, calculate the results using the characterization factors
-                            # Load the characterization factors
-                            characterization_factors_loaded = characterization_factors[database][method]
-                            
-                            # Calculate the impact by multliplying the amount with the factor
-                            # If no factor is found, use 0
-                            exchange_score = characterization_factors_loaded.get(exchange, 0) * exchange_amount
-                            
-                            # Add the results to the final list
-                            immediate_exchange_scores += [{"Flow_type": exchange_type, "Activity_Input": activities_keys[first], "Method": method, "Input": exchange, "Score": exchange_score, "Flow_amount": exchange_amount}]
-                            
-                            # Temporarily, save the results
-                            # temporary_saved_scores[(method, exchange)] = functional_unit / exchange_amount * exchange_score
-                            temporary_saved_scores[(method, exchange)] = characterization_factors_loaded.get(exchange, 0)
+                        # Add the calculated result to it
+                        self._temporary_score_results[activity_key][met]: float = (1 / self.functional_amount * score) if self.functional_amount != 0 else 0
                     
-                    else:
-                        # If the type is other than 'biosphere' or 'technosphere', raise an error
-                        # Note: this should not be the case because we only consider exchanges of this types
-                        raise TypeError("Current exchange type " + str(exchange_type) + " not evaluated for impact assessment.")
             
-            # Add the results to the results dictionary
-            results["LCIA_exchanges_scores"] += [immediate_exchange_scores]
+            # Prepare everything for the LCI and/or LCIA emission contribution
+            if any((extract_LCI_emission_contribution, calculate_LCIA_emission_contribution)):                
+                
+                # Retrieve the emission contribution array as a dummy
+                _dummy_structured_emission_array: np.array = self._get_structured_array_for_LCI_emission_contribution(database = database)
+                
+                # Prepare an array with the activity key of the length of the dummy emission contribution array
+                emission_contribution_activity_key_array: np.array = self._get_element_array(str(activity_key), len(_dummy_structured_emission_array["activity_key"]), dtype = "U")
+                
+                
+            # Extract the LCI emission contribution
+            if extract_LCI_emission_contribution:
+                
+                # Extract the LCI emission contribution as the sum of the inventory matrix
+                LCI_emission_contribution_array: np.array = np.array(inventory.sum(axis = 1))[:, 0]
+                
+                # Build or retrieve the structured emission array
+                structured_array: np.array = self._get_structured_array_for_LCI_emission_contribution(database = database)
+                
+                # Overwrite the activity key with the current activity key
+                structured_array["activity_key"]: np.array = emission_contribution_activity_key_array
+                
+                # Overwrite the dummy values with the contribution values
+                structured_array["value"]: np.array = LCI_emission_contribution_array
+                
+                # We don't apply a cutoff, but remove all lines with 0 value
+                structured_array_cutoff: np.array = self._apply_cut_off_to_structured_array(structured_array = structured_array, cut_off = None)
+                
+                # Convert structured array back to list of tuples
+                structured_array_cutoff_as_list: list[tuple] = structured_array_cutoff.tolist()                       
+                
+                # Add to the result dictionary
+                self.results_raw[self.name_LCI_emission_contributions] += structured_array_cutoff_as_list
+
+
+
+            # Prepare everything for the LCI and/or LCIA process contribution
+            if any((extract_LCI_process_contribution, calculate_LCIA_process_contribution)):                
+                
+                # Retrieve the process contribution array as a dummy
+                _dummy_structured_process_array: np.array = self._get_structured_array_for_LCI_process_contribution(database = database)
+                
+                # Prepare an array with the activity key of the length of the dummy process contribution array
+                process_contribution_activity_key_array: np.array = self._get_element_array(str(activity_key), len(_dummy_structured_process_array["activity_key"]), dtype = "U")
             
-            ##### Block 4 ##### (end) #####
-            ###############################
+            
+            
+            # Extract the LCI process contribution
+            if extract_LCI_process_contribution:
+                
+                # Extract the LCI process contribution as the sum of the transposed inventory matrix
+                LCI_process_contribution_array: np.array = np.array(inventory.transpose().sum(axis = 1))[:, 0]
+                
+                # Build or retrieve the structured process array
+                structured_array: np.array = self._get_structured_array_for_LCI_process_contribution(database = database)
+                
+                # Overwrite the activity key with the current activity key
+                structured_array["activity_key"]: np.array = process_contribution_activity_key_array
+                
+                # Overwrite the dummy values with the contribution values
+                structured_array["value"]: np.array = LCI_process_contribution_array
+                
+                # We don't apply a cutoff, but remove all lines with 0 value
+                structured_array_cutoff: np.array = self._apply_cut_off_to_structured_array(structured_array = structured_array, cut_off = None)
+                
+                # Convert structured array back to list of tuples
+                structured_array_cutoff_as_list: list[tuple] = structured_array_cutoff.tolist()                       
+                
+                # Add to the result dictionary
+                self.results_raw[self.name_LCI_process_contributions] += structured_array_cutoff_as_list
+
+
+
+
+
+            # Calculate the emission and/or process contribution
+            if any((calculate_LCIA_emission_contribution, calculate_LCIA_process_contribution)):
+                
+                # Loop through each characterized matrix and method to get the sum/LCIA score
+                for met, characterized_matrix in characterized_matrices.items():
+                    
+                    # Extract the LCIA emission contribution, if indicated
+                    if calculate_LCIA_emission_contribution:
+
+                        # Extract the LCIA emission contribution as the sum of the characterized matrix
+                        LCIA_emission_contribution_array: np.array = np.array(characterized_matrix.sum(axis = 1))[:, 0]
+                        
+                        # Build or retrieve the structured emission array
+                        # structured_array: np.array = self._get_structured_array_for_LCIA_emission_contribution(database = database, method = met)
+                        structured_array: np.array = self._get_structured_array_for_LCIA_emission_contribution(database = database, method = met)
+                        
+                        # Overwrite the activity key with the current activity key
+                        structured_array["activity_key"]: np.array = emission_contribution_activity_key_array
+                        
+                        # Overwrite the dummy values with the contribution values
+                        structured_array["value"]: np.array = LCIA_emission_contribution_array
+                        
+                        # Apply a cutoff
+                        structured_array_cutoff: np.array = self._apply_cut_off_to_structured_array(structured_array = structured_array, cut_off = self.cut_off_percentage)
+                        
+                        # Convert structured array back to list of tuples
+                        structured_array_cutoff_as_list: list[tuple] = structured_array_cutoff.tolist()                       
+                        
+                        # Add to the result dictionary
+                        self.results_raw[self.name_LCIA_emission_contributions] += structured_array_cutoff_as_list
+                        
+                        
+
+
+                    # Extract the LCIA process contribution, if indicated
+                    if calculate_LCIA_process_contribution:
+                        
+                        # Extract the LCIA process contribution as the sum of the transposed characterized matrix
+                        LCIA_process_contribution_array: np.array = np.array(characterized_matrix.transpose().sum(axis = 1))[:, 0]
+                        
+                        # Build or retrieve the structured process array
+                        structured_array: np.array = self._get_structured_array_for_LCIA_process_contribution(database = database, method = met)
+                        
+                        # Overwrite the activity key with the current activity key
+                        structured_array["activity_key"]: np.array = process_contribution_activity_key_array
+                        
+                        # Overwrite the dummy values with the contribution values
+                        structured_array["value"]: np.array = LCIA_process_contribution_array
+                        
+                        # Apply a cutoff
+                        structured_array_cutoff: np.array = self._apply_cut_off_to_structured_array(structured_array = structured_array, cut_off = self.cut_off_percentage)
+                        
+                        # Convert structured array back to list of tuples
+                        structured_array_cutoff_as_list: list[tuple] = structured_array_cutoff.tolist()                       
+                        
+                        # Add to the result dictionary
+                        self.results_raw[self.name_LCIA_process_contributions] += structured_array_cutoff_as_list
+ 
+                        
+        # Print summary statement(s)
+        if self.progress_bar:
+            
+            # Save current time
+            end_round_1: datetime.datetime = datetime.datetime.now()
+            
+            # Print statement
+            print("  - Calculation time: {}".format(self.convert_timedelta(end_round_1 - start_round_1)))
+            
+            if calculate_LCIA_scores:
+                print("      - {} LCIA score(s) from {} activity/ies & {} methods were calculated".format(len(self.activities)*len(self.methods), len(self.activities), len(self.methods)))
         
-        # Print additional progress bar statement to console, if specified
-        if print_progress_bar:
+        # In case we want to calculate the scores of the exchanges, we need to go again through all exchanges and do the calculation
+        if calculate_LCIA_scores_of_exchanges:
             
-            # Summary of the amount of calculated impacts
-            print("    Calculated " + str(len(hp.flatten(all_exchanges_keys)) * len(methods)) + " impacts (from " + str(len(hp.flatten(all_exchanges_keys))) + " exchanges, " + str(len(methods)) + " methods)")
-            
-            # Summary of the calculation time
-            print("    Calculation time: " + str(round((datetime.datetime.now() - time_exc).seconds, 0)) + " sec")
-        
-    
-    # Make a short validation. The list lengths of the produced 'results' dictionary need to be of the same size
-    # Otherwise, an error occurred
-    # Extract the list lengths
-    all_lengths = list(set([len(v) for k, v in results.items() if v != []]))
-    
-    # Check whether different list lengths have been found
-    if len(all_lengths) > 1:
-        
-        # If yes, an error is raised
-        raise ValueError("Different lengths for key/value pairs were found in the 'results' variable.")
-    
-    
-    ###############################
-    ##### Block 5 ##### (start) ###
-    # -> Depending on the results, it may be that list of lists of list ... have been generated
-    # -> We need to flatten those lists, in order to properly work with them
-    
-    # Print statement
-    print("\n-----\nPreparing results")
-    
-    # Initialise an empty dictionary, where flattened lists will be written to as values
-    results_flattened = {}
-    
-    # Loop through each key (= type of result) and value (= list of values of results) of the produced results from beforehand
-    for k1, v1 in results.items():
-        
-        # Go on if the current list (= v1) is empty
-        # That means, that no data was added
-        if v1 == []:
-            continue
-        
-        # Flatten the list using the helper function 'flatten'
-        v1_flattened = [m for m in hp.flatten(v1)]
-        
-        # Check if there is the need to further flatten.
-        # We need to further flatten if after the flattening, there are still lists available
-        all_instances_are_lists = [True if isinstance(m, list) else False for m in v1_flattened]
-        
-        # Check if all instances are still lists.
-        if all(all_instances_are_lists):
-            
-            # Here, we further flatten the lists
-            # Additionally, if needed, the 'apply_cutoff' function is used to reduce the amount of data points
-            # Cutoff function can only be applied to the emission and/or process contribution
-            # Otherwise, lists will only be flattened
-            
-            # Process contribution
-            if k1 == "LCIA_contribution_of_top_processes":
-                results_flattened[k1] = apply_cutoff(v1, results["LCIA_activity_scores"], cutoff_process)
-            
-            # Emission contribution
-            elif k1 == "LCIA_contribution_of_top_emissions":
-                results_flattened[k1] = apply_cutoff(v1, results["LCIA_activity_scores"], cutoff_emission)
-            
-            # All other results
+            # Check if progress bar should be printed
+            if self.progress_bar:
+                
+                # Wrap progressbar around iterables
+                iterables: list[tuple] = hp.progressbar(self.results_raw[self.name_LCI_exchanges], prefix = "\nCalculate LCIA scores of exchanges ...")
+                
             else:
-                results_flattened[k1] = [o for idx_I, m in enumerate(v1) for idx_II, n in enumerate(m) for o in n]
-        
-        else:
-            # Otherwise, make a double loop to flatten
-            results_flattened[k1] = [n for idx, m in enumerate(v1) for n in m]
+                # Otherwise, simply create iterable variable
+                iterables: list[tuple] = self.results_raw[self.name_LCI_exchanges]
             
-        ##### Block 5 ##### (end) #####
-        ###############################
-    
-    
-    # Extract the database names which are used by the results dictionary
-    all_database_names_used = list(set([m.get("Input", [None])[0] for k, v in results_flattened.items() for m in v if isinstance(m.get("Input"), tuple)] + [m.get("Activity_Input", [None])[0] for k, v in results_flattened.items() for m in v if isinstance(m.get("Activity_Input"), tuple)]))
-    
-    # Load the data from the databases in order to map
-    # Load the mapping data for activities and for emissions (= flow)
-    mapping_activity, mapping_flow = load_mappings(all_database_names_used, progress_bar = print_progress_bar)
-    
-    # Load the mapping for the method units
-    mapping_method_unit = {m: bw.Method(m).metadata.get("unit", "unit could not be extracted") for m in methods}
-    
-    ###############################
-    ##### Block 6 ##### (start) ###
-    # -> We have just used a minimum amout of data so far
-    # -> To understand the data that we generated, we need to append/map additional information
-    
-    # Initialise an empty dictionary
-    results_final = {}
-    
-    # Loop through all the result key/value pairs in the flattened results dictionary
-    for k, v in results_flattened.items():
-        
-        # Initialise an empty list
-        final = []
-        
-        # Loop through each item in the current results list
-        for m in v:
+            # To calculate the LCIA scores for exchanges, we need to preload the characterization factors
+            # This is a sacrification, BUT it will bring much more value if there are many exchanges to be calculated because we can omit the try, except statement (LCA calculation) if we already identify biosphere flows early
+            for met in self.methods:
+                self._load_characterization_factors(method = met)
             
-            # Each item is built from scratch. Therefore, we need to initialise an empty dictionary at each iteration
-            item = {}
-            
-            # Loop through each key/value pair of the current item
-            for k_m, v_m in m.items():
+            # Loop through all activities
+            for (act_key, act_amount, flow_key, flow_amount, _, _) in iterables:
+                                
+                # Initialize a list to potentially store all methods for which calculation was unsuccessful
+                methods_for_which_no_scores_were_calculated: list[tuple] = []
                 
-                # Different actions are required depending on the key name
-                
-                # If the key is 'Input', it is generally mapped with the help of the mapping dictionary which was created beforehand
-                if k_m == "Input":
-                    
-                    # However, if the value is 'Rest' (emerging from applying a cutoff)
-                    # we don't need to add any other information from the mapping
-                    if v_m == "Rest":
+                # Go again through all methods
+                for met in self.methods:
+                                        
+                    # Check if the score has already been calculated
+                    if self._temporary_score_results.get(flow_key, {}).get(met) is not None:
                         
-                        # Just add the flow name directly which will remain as 'Rest'
-                        # The number 13 specifieds the location of the column at the end in the pandas Dataframe
-                        item["13_Flow_name"] = "Rest"
-                    else:
-                        # Otherwise, use the flow mapping to extract all other relevant information which will be added to the new dictionary
-                        item |= mapping_flow[v_m]
-                
-                # The same is done for the activity mapping, using the activity instead of the flow mapping
-                # However, here we do not have an exception such as 'Rest'
-                elif k_m == "Activity_Input":
-                    
-                    # Add the additional information extracted through the activity mapping to the current dictionary
-                    item |= mapping_activity[v_m]
-                
-                # If the key is 'Method', simply add it to the new dict
-                # Also extract and append the method's unit
-                elif k_m == "Method":
-                    
-                    # If no method was specified (that means no impacts were generated, e.g. for exchanges), just go on
-                    if v_m is None:
+                        # Construct and add tuple to raw results
+                        self.results_raw[self.name_LCIA_immediate_scores] += [(act_key,
+                                                                               act_amount,
+                                                                               flow_key,
+                                                                               flow_amount,
+                                                                               flow_amount * self._temporary_score_results[flow_key][met],
+                                                                               met
+                                                                               )]
+                        # Go to next
                         continue
                     
-                    # Extract the method from the method mapping and add
-                    item["1000_Score_unit"] = mapping_method_unit[v_m]
+                    # Retrieve characterization factor, if possible 
+                    cf: (float | None) = self.characterization_factors[met].get(flow_key)                    
                     
-                    # Append the method
-                    item["1001_" + k_m] = v_m
-                
-                # If the key is 'Score', simply append the existing information
-                elif k_m == "Score":
-                    item["100_" + k_m] = v_m
-                
-                # If the key is 'Flow_amount', simply append the existing information
-                elif k_m == "Flow_amount":
-                    item["18_" + k_m] = v_m
+                    # If successful, the current flow is of type biosphere and we can simply multiply the cf with the flow amount and go on
+                    if cf is not None:
+                        
+                        # Construct and add tuple to raw results
+                        self.results_raw[self.name_LCIA_immediate_scores] += [(act_key,
+                                                                               act_amount,
+                                                                               flow_key,
+                                                                               flow_amount,
+                                                                               flow_amount * cf,
+                                                                               met
+                                                                               )]
+                        # Go to next
+                        continue
                     
-                # If the key is 'Flow_type', simply append the existing information
-                elif k_m == "Flow_type":
-                    item["12_" + k_m] = v_m
+                    # Add to list
+                    methods_for_which_no_scores_were_calculated += [met]
+
                 
-                # If the current key is None of the keys specified in this if/else statement,
-                # an error will be raised
-                else:
-                    raise ValueError("Key '" + str(k_m) + "' is currently not handled in Block 6. Check!")
+                # If everything has already been successfully calculated, go to next activity
+                if methods_for_which_no_scores_were_calculated == []:
+                    continue
+                
+                # If we arrive here, we need to run through the matrix calculation
+                # First get the database the activity belongs to
+                database: str = act_key[0]
+
+                # Get the BW object,
+                try:
+                    # We try to construct the LCA object
+                    lca_object: bw2calc.lca.LCA = self._get_LCA_object(database = database)
+                    
+                    # and to redo the inventory matrix (which takes quite some time)
+                    lca_object.redo_lci({flow_key: flow_amount})
+                
+                except OutsideTechnosphere:
+                    # If we fail to redo the lca because the key is outside of the technosphere, that means that the current flow belongs to a biopshere database
+                    # Since we already tried to do a simple cf calculation (see above), it means that the current flow is not characterized in the specific methods
+                    # We can simply add a 0 now
+                    self.results_raw[self.name_LCIA_immediate_scores] += [(act_key,
+                                                                           act_amount,
+                                                                           flow_key,
+                                                                           flow_amount,
+                                                                           float(0),
+                                                                           m
+                                                                           ) for m in methods_for_which_no_scores_were_calculated]
+                    # We go on
+                    continue
+                
+                
+                # We then extract the inventory matrix
+                inventory: np.matrix = lca_object.inventory
+                
+                # Loop through each method and create the characterized matrices by multiplying the inventory matrix with the 
+                for met in methods_for_which_no_scores_were_calculated:
+                    
+                    # Build or simply get the matrix
+                    matrix = self._get_characterization_matrix(database = database, method = met)
+                    
+                    # Multiply the matrices
+                    characterized_matrix = (matrix * inventory)
+                    
+                    # The score is simply the sum of the matrix
+                    score: float = characterized_matrix.sum()
+                
+                    # Construct and add tuple to raw results
+                    self.results_raw[self.name_LCIA_immediate_scores] += [(act_key,
+                                                                           act_amount,
+                                                                           flow_key,
+                                                                           flow_amount,
+                                                                           score,
+                                                                           met
+                                                                           )]
+
             
-            # Add the activity amount (specified as functional unit) to the newly created dictionary
-            # and add the dictionary to the final results list
-            final += [dict(item, **{"8_Activity_amount": functional_unit})]
-        
-        # Add the new list with the existing key to the dictionary
-        results_final[k] = final 
-        
-        ##### Block 6 ##### (end) #####
-        ###############################
-        
     
-    ###############################
-    ##### Block 7 ##### (start) ###
-    # -> Convert dictionary data into Pandas DataFrames
-    # -> Write results to XLSX or CSV
+    def get_characterization_factors(self, methods: (list[tuple] | None) = None, extended: bool = True) -> list[dict]:
+        
+        # If no methods are specified, the ones specified in the calculation class will be exported
+        if methods is None:
+            methods: list[tuple] = self.methods
+        
+        else:
+            # Extract all methods that are not registered in the Brightway background
+            check_methods = [str(m) for m in methods if m not in bw2data.methods]
+            
+            # Check if all methods are registered in the Brightway background
+            if check_methods != []:
+                raise ValueError("They following methods are not registered:\n - " + "\n - ".join(check_methods))
+            
+        
+        # Initialize a new list to store the characterization factors to
+        characterization_factors: list[dict] = []
+        
+        # Loop through each method individually
+        for method in methods:
+            
+            # Load characterization factors, if not yet loaded
+            self._load_characterization_factors(method = method)
+            
+            # Loop through each CF individually
+            for (database, code), cf in self.characterization_factors[method].items():
+                
+                # Check if flows should extensively be described
+                if not extended:
+                    cf_as_dict: dict = {self.k_flow_database: database,
+                                        self.k_flow_code: code,
+                                        self._cf_k_name: cf,
+                                        self._method_k_name: method}
+                    
+                else:
+                    # Retrieve the specified dictionary values from the Brightway background activities
+                    flow_as_dict: dict = self._get_act_as_dict((database, code), self.keys_to_extract_from_BW_acts)
+                    method_unit: dict = {self._name_sep.join((self._method_k_name, "unit")): self._get_method_unit(method = method)}
+                    
+                    # Construct dictionary
+                    cf_as_dict: dict = {self.k_flow_database: database,
+                                        self.k_flow_code: code,
+                                        **{(self._name_sep.join((self._flow_k_name, k))): v for k, v in flow_as_dict.items()},
+                                        self._cf_k_name: cf,
+                                        self._method_k_name: method,
+                                        **method_unit}
+                
+                # Add characterization dictionary to the list
+                characterization_factors += [{k: v for k, v in cf_as_dict.items() if v is not None}]
+        
+        # Return the list
+        return characterization_factors
+                
     
-    # Initialise an empty dictionary where dataframes will be temporarily saved to
-    dataframes = {}
     
-    # Write results of the simple LCIA scores to dataframe
-    df_summary_orig = pd.DataFrame(results_final["LCIA_activity_scores"])
-    
-    # Rearrange and rename the columns in the dataframe
-    df_summary = df_summary_orig[rearrange_columns(list(df_summary_orig.columns))].rename(columns = rename_columns(list(df_summary_orig.columns)))
-    
-    # Add to the new dictionary
-    dataframes["LCIA_summary"] = df_summary
-    
-    # Initialize a documentation variable
-    documentation = {"LCIA_summary": "This dataframe contains the result of the LCA calculation and shows the total environmental impact of all inventories (LCI) and methods (LCIA) combinations."}
-    
-    # Write and add Pandas DataFrame for each type of results depending on whether the results have been produced or not
-    # ... LCI exchanges
-    if write_LCI_exchanges:
+    def get_results(self, extended: bool = True) -> list[dict]:
         
-        # Append to documentation
-        documentation["LCI_exchanges"] = "This dataframe contains detailed information about the inventories. It shows the inputs and emissions (biosphere and technosphere) for the first layer/tier. It is equivalent to what you see when you open the inventory in SimaPro."
+        # Check if results dictionary is available        
+        if not hasattr(self, "results_raw"):
+            raise ValueError("Nothing has been calculated yet. Use .calculate() to run calculation first.")
         
-        # Convert to dataframe
-        df_exchanges_orig = pd.DataFrame(results_final["LCI_exchanges"])
-        
-        # Rearrange and rename columns and save to dictionary
-        dataframes["LCI_exchanges"] = df_exchanges_orig[rearrange_columns(list(df_exchanges_orig.columns))].rename(columns = rename_columns(list(df_exchanges_orig.columns)))
-    
-    # ... LCI exchanges as biosphere emissions
-    if write_LCI_exchanges_as_emissions:
-        
-        # Append to documentation
-        documentation["LCI_exchanges_as_emissions"] = "This dataframe contains detailed information about the inventories. It shows the summarized biosphere emissions from the whole supply chain (inventory matrix) and not only from the first layer/tier. Note: it shows only the uncharacterized emissions and therefore is not connected to any LCIA method."     
-        
-        # Convert to dataframe
-        df_exchanges_biosphere_orig = pd.DataFrame(results_final["LCI_exchanges_reduced_to_biosphere_flows"])
-        
-        # Rearrange and rename columns and save to dictionary
-        dataframes["LCI_exchanges_as_biosphere_emissions"] = df_exchanges_biosphere_orig[rearrange_columns(list(df_exchanges_biosphere_orig.columns))].rename(columns = rename_columns(list(df_exchanges_biosphere_orig.columns)))
-    
-    # ... LCIA impacts of immediate activity exchanges
-    if write_LCIA_impacts_of_activity_exchanges:
-        
-        # Append to documentation
-        documentation["LCIA_impacts_of_activity_exchanges"] = "This dataframe shows the contribution of the individual biosphere and technosphere flows to the overall impact of an inventory. It is similarly to 'LCI_exchanges' with the difference, that for each biosphere and technosphere flow, the contribution to the environmental impact is shown."
-        
-        # Convert to dataframe
-        df_exchanges_impacts_orig = pd.DataFrame(results_final["LCIA_exchanges_scores"])
-        
-        # Rearrange and rename columns and save to dictionary
-        dataframes["LCIA_impacts_of_activity_exchanges"] = df_exchanges_impacts_orig[rearrange_columns(list(df_exchanges_impacts_orig.columns))].rename(columns = rename_columns(list(df_exchanges_impacts_orig.columns))).sort_values(by = ["Method", "Activity_code"])
-    
-    # ... LCIA emission contribution
-    if write_LCIA_emission_contribution:
-        
-        # Append to documentation
-        documentation["LCIA_emission_contribution"] = "This dataframe shows the contribution of all elementary flows/biosphere flows (e.g., carbon dioxide) from the whole supply chain of the inventory to the overall environmental impact of the inventory."
-        
-        # Convert to dataframe
-        df_emissions_orig = pd.DataFrame(results_final["LCIA_contribution_of_top_emissions"])
-        
-        # Rearrange and rename columns and save to dictionary
-        dataframes["LCIA_emission_contribution"] = df_emissions_orig[rearrange_columns(list(df_emissions_orig.columns))].rename(columns = rename_columns(list(df_emissions_orig.columns)))
-     
-    # ... LCIA process contribution
-    if write_LCIA_process_contribution:
-        
-        # Append to documentation
-        documentation["LCIA_process_contribution"] = "This dataframe shows the contribution of all activities/processes (e.g., electricity) from the whole supply chain of the inventory to the overall environmental impact of the inventory."
-        
-        # Convert to dataframe
-        df_processes_orig = pd.DataFrame(results_final["LCIA_contribution_of_top_processes"])
-        
-        # Rearrange and rename columns and save to dictionary
-        dataframes["LCIA_process_contribution"] = df_processes_orig[rearrange_columns(list(df_processes_orig.columns))].rename(columns = rename_columns(list(df_processes_orig.columns)))
-    
-    # ... Characterization factors
-    if write_characterization_factors:
-        
-        # Append to documentation
-        documentation["Characterization_factors"] = "This dataframe shows all characterization factors of all LCIA methods that were used for LCA calculation."
-        
-        # Extract characterization factors directly to dataframe
-        df_factors = pd.DataFrame(extract_CF(methods))
-        
-        # Save to dictionary
-        dataframes["Characterization_factors"] = df_factors
-    
-    # Clean the keys --> remove the numbers from them again
-    results_final_keys_cleaned = {k: [{"_".join(k2.split("_")[1:]): v2 for k2, v2 in m.items()} for m in v] for k, v in results_final.items()}
-    
-    # Return dictionary and do not write result as a file
-    if not write_results_to_file:
-        return results_final_keys_cleaned
-        
-    # Check, if row length is above or beyond the maximum number of rows set by Excel
-    # If it is beyond the limit, an Excel file is written
-    # Otherwise, CSV files are written
-    write_CSV_bool = any([True if len(v) > 1048000 else False for k, v in dataframes.items()])
-    
-    # Append documentation to dataframes
-    dataframes["Documentation"] = pd.DataFrame([{"Sheet" if not write_CSV_bool else "File": "'" + sheet_name + "'" if not write_CSV_bool else "'" + filename + "_" + sheet_name + ".csv'",
-                                                 "Description": doc} for sheet_name, doc in documentation.items()])
-    
-    # Prepare iterator, either with or without progress bar
-    # Depending on what is specified
-    if print_progress_bar:
-        
-        # Wrap progress bar around iterator
-        i_dataframes = hp.progressbar(dataframes.items(), prefix = "\nWrite data ...")
-    else:
-        # Do nothing
-        i_dataframes = dataframes.items()
-    
-    # Decide, whether to write CSV files or XLSX file
-    if write_CSV_bool:
+        # Initialize a new results dictionary to where results will be stored
+        if extended:
+            self.results_extended: dict = {k: [] for k in list(self.results_raw.keys()).copy()}
+        else:
+            self.results_simple: dict = {k: [] for k in list(self.results_raw.keys()).copy()}
         
         # Print statement
-        print("-----\nSaving CSV files")
+        print("\n-----")
+        print("Processing results...") if not extended else print("Processing results, incl. retrieving of activity meta data")
         
-        # Loop through all dataframes and write
-        for idx, (df_name, df_data) in enumerate(i_dataframes):
+        # Loop through the results individually
+        for result_type, results in self.results_raw.items():
             
-            # Write data
-            df_data.to_csv(local_output_path / str(filename + "_" + df_name + ".csv"))
+            # # Check if progress bar should be printed to console
+            # if self.progress_bar:
+                
+            #     # Wrap progress bar around iterator
+            #     results: list[tuple] = hp.progressbar(results, prefix = "\nPreparing '{}' results ...".format(result_type))
             
-        # Print statement saying where CSV files were stored
-        print("-----\nLCA results saved to:\n" + os.path.join(str(local_output_path)))
+            # Loop through each result item
+            for (act_key, act_amount, flow_key, flow_amount, score, method) in results:  
+                
+                # If everything is 0, we can go to the next one and do not need to add it to the results
+                if act_amount == 0 and flow_amount == 0 and score == 0:
+                    continue
+                
+                # In certain cases, tuples have been written as strings
+                # We need to revert this by using ast
+                # ... revert activity key tuple
+                if isinstance(act_key, str):
+                    act_key: tuple[str, str] = ast.literal_eval(act_key)
+                
+                # ... revert flow key tuple
+                if isinstance(flow_key, str):
+                    flow_key: tuple[str, str] = ast.literal_eval(flow_key)
+                
+                # ... revert method tuple
+                if isinstance(method, str):
+                    method: tuple[str, str] = ast.literal_eval(method)
+                
+                # Retrieve individual variables, for simplified handling
+                v_act_database: (str | None) = act_key[0] if act_key is not None else None
+                v_act_code: (str | None) = act_key[1] if act_key is not None else None
+                v_flow_database: (str | None) = flow_key[0] if flow_key is not None else None
+                v_flow_code: (str | None) = flow_key[1] if flow_key is not None else None
+                
+                # Check if flows should be described extensively
+                if not extended:
+                    result_as_dict: dict = {self.k_act_database: v_act_database,
+                                            self.k_act_code: v_act_code,
+                                            self.k_act_amount: act_amount,
+                                            self.k_flow_database: v_flow_database,
+                                            self.k_flow_code: self.rest_name if flow_key == self.rest_key else v_flow_code,
+                                            self.k_flow_amount: flow_amount,
+                                            self._score_k_name: score,
+                                            self._method_k_name: method}
+                    
+                    # Add the constructed dictionary to the list
+                    self.results_simple[result_type] += [{k: v for k, v in result_as_dict.items() if v is not None}]
+        
+                    
+                else:
+                    # Retrieve the specified dictionary values from the Brightway background activities
+                    act_as_dict: dict = self._get_act_as_dict(act_key, self.keys_to_extract_from_BW_acts) if act_key is not None else {}
+                    flow_as_dict: dict = self._get_act_as_dict(flow_key, self.keys_to_extract_from_BW_acts) if flow_key and flow_key != self.rest_key is not None else {}
+                    method_unit: dict = {self._name_sep.join((self._method_k_name, "unit")): self._get_method_unit(method = method)} if method is not None else {}
+                    
+                    # Construct dictionary
+                    result_as_dict: dict = {self.k_act_database: v_act_database,
+                                            self.k_act_code: v_act_code,
+                                            **{(self._name_sep.join((self._act_k_name, k))): v for k, v in act_as_dict.items()},
+                                            self.k_act_amount: act_amount,
+                                            self.k_flow_database: v_flow_database,
+                                            self.k_flow_code: self.rest_name if flow_key == self.rest_key else v_flow_code,
+                                            **{(self._name_sep.join((self._flow_k_name, k))): v for k, v in flow_as_dict.items()},
+                                            self.k_flow_amount: flow_amount,
+                                            self._score_k_name: score,
+                                            self._method_k_name: method,
+                                            **method_unit}
+                
+                    # Add the constructed dictionary to the list
+                    self.results_extended[result_type] += [{k: v for k, v in result_as_dict.items() if v is not None}]
+        
+        # Print statement
+        print("Completed")
+        
+        # Return
+        if extended:
+            
+            # Return extended results
+            return self.results_extended
+        
+        else:
+            # Return simple results
+            return self.results_simple
+
+    
 
 
-    else:
+    # Function to export the results to XLSX/CSV
+    def write_results(self,
+                      path: (pathlib.Path | str | None),
+                      filename: (str | None) = None,
+                      use_timestamp_in_filename: bool = True,
+                      extended: bool = True) -> None:
+        
+        # Check if extended results have already been prepared and are available
+        if (extended and not hasattr(self, "results_extended")) or (not extended and not hasattr(self, "results_simple")):
+
+            # If not, prepare them first
+            _results_: dict[str, list[dict]] = self.get_results(extended = extended)
+            
+            # Delete the results variable to keep memory minimal
+            del _results_
+        
+        # Select results
+        results_to_write: dict = self.results_extended if extended else self.results_simple
+                
+        # Convert results to dataframe
+        results_df: dict[str, pd.DataFrame] = {k: pd.DataFrame(v) for k, v in results_to_write.items()}
+
+        # Create a path if not provided by the function
+        # If not provided, the local Brightway2 folder will be used to save results
+        if path is None:
+            path: pathlib.Path = pathlib.Path(bw2data.projects.output_dir)
+        
+        # If path is of type string, provide as pathlib path
+        elif isinstance(path, str):
+            path: pathlib.Path = pathlib.Path(path)
+            
+        # Check if the path exists
+        if not path.is_dir():
+            raise ValueError("Path '" + str(path) + "' does not exist")
+            
+        # Extract current time
+        current_time = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        
+        # Create filename if not provided
+        if filename is None:
+            
+            # Either use or do not use the timestamp in the filename
+            # depending on how specified in the function input
+            if use_timestamp_in_filename:
+                
+                # Give file name
+                filename = current_time + "_LCA"
+                
+            else:
+                # Give file name
+                filename = "LCA"
+        
+        else:
+            # The same as above
+            if use_timestamp_in_filename:
+                
+                # Give file name
+                filename = current_time + "_" + filename
+        
+        # Initialize a documentation variable
+        documentation = {self.name_LCIA_scores: """This dataframe contains the result of the LCA calculation
+                         and shows the total environmental impact of all activities (LCI) and methods (LCIA) combinations""",
+                         
+                         self.name_LCI_exchanges: """This dataframe contains detailed information about the inventories.
+                         It shows the biosphere emissions and technosphere activities contributing to an activity (LCI).""",
+                         
+                         # !!! DO THE DOCUMENTATIONS HERE
+                         self.name_LCI_emission_contributions: """ TODO """,
+                         
+                         # !!! DO THE DOCUMENTATIONS HERE
+                         self.name_LCI_process_contributions: """ TODO """,
+                         
+                         # !!! DO THE DOCUMENTATIONS HERE
+                         self.name_LCIA_immediate_scores: """ TODO """,
+                         
+                         # !!! DO THE DOCUMENTATIONS HERE
+                         self.name_LCIA_emission_contributions: """ TODO """,
+                         
+                         # !!! DO THE DOCUMENTATIONS HERE
+                         self.name_LCIA_process_contributions: """ TODO """,
+
+                         }
+        
         # Write data to XLSX
         # Initialise the writer variable
-        writer = pd.ExcelWriter(local_output_path / str(filename + str(".xlsx")))
+        writer = pd.ExcelWriter(path / (str(filename) + ".xlsx"))
         
-        # Print statement
-        print("\n-----\nSaving XLSX file")
+        # Convert the documentation dictionary into a dataframe
+        documentation_df: pd.DataFrame = pd.DataFrame([{"Sheet": k, "Description": v} for k, v in documentation.items() if k in results_df])
         
-        # Loop through all dataframes and write
-        for idx, (df_name, df_data) in enumerate(i_dataframes):
+        # Add the documentation dataframe to the writer
+        documentation_df.to_excel(writer, sheet_name = "Documentation")
+        
+        # Add each result dataframe to the writer
+        for df_name, df in results_df.items():
             
-            # Write data
-            df_data.to_excel(writer, sheet_name = df_name[:30])
-        
-        # Print statement
-        print("\n-----\nClose file")
-        
+            # Check if the length of the dataframe exceeds a million and more rows
+            # If not, we are good to go with writing an excel file
+            if len(df) < 1048000:
+                
+                # We simply append the result dataframe to the excel workbook
+                df.to_excel(writer, sheet_name = df_name[:30])
+                
+            else:
+                # If there are more than one million rows, we can not add the results in a new sheet.
+                # In that case, we write a standalone csv
+                df.to_csv((path / str(df_name + ".csv")))
+
         # Save the XLSX
         writer.close()
         
-        # Print statement saying where XLSX file was stored
-        print("\n-----\nLCA results saved to:\n" + str(local_output_path / str(filename + ".xlsx")))
-    
-        
+        # Print filepath if specified
+        if self.progress_bar:
+            
+            # Print statement saying where XLSX file was stored
+            print("\n-----\nLCA results saved to the following path:\n" + str(path))
 
-    ##### Block 7 ##### (end) #####
-    ###############################    
+
+
+
+    # Function to convert time delta in a readable, nice string
+    def convert_timedelta(self, timedelta: datetime.timedelta) -> str:
+        
+        # Check function input type
+        hp.check_function_input_type(self.convert_timedelta, locals())
+        
+        # Get total days and total seconds
+        days, seconds = timedelta.days, timedelta.seconds
+        
+        # Convert to hours, minutes and seconds
+        hours = days * 24 + seconds // 3600
+        minutes = (seconds % 3600) // 60
+        seconds = (seconds % 60)
+        
+        # Create string
+        if hours > 0:
+            string: str = str(hours) + " hour(s) and " + str(minutes) + " minute(s)"
+            
+        elif minutes > 0:
+            string: str = str(minutes) + " minute(s) and " + str(seconds) + " second(s)"
+            
+        elif seconds > 0:
+            string: str = str(seconds) + " second(s)"
+            
+        else:
+            string: str = "less than a second"
+            
+        # Return string
+        return string
     
-    # Return dictionary
-    return results_final_keys_cleaned
+    
+
+
+#%%
+
+# if __name__ == "__main__":
+    
+#     here: pathlib.Path = pathlib.Path(__file__).parent
+    
+#     def change_brightway_project_directory(BRIGHTWAY2_DIR: (pathlib.Path | str),
+#                                            verbose: bool = True):
+        
+#         # Make variable check
+#         hp.check_function_input_type(change_brightway_project_directory, locals())
+        
+#         # Print statement
+#         if verbose:
+#             print("BRIGHTWAY2_DIR is set to the following path:\n" + str(BRIGHTWAY2_DIR) + "\n")
+        
+#         # Those lines are directly taken from Brightway
+#         # It constructs some fields new and sets the path according to the one given by ourselves
+#         bw2data.projects._base_data_dir = str(BRIGHTWAY2_DIR)
+#         bw2data.projects._base_logs_dir = os.path.join(str(BRIGHTWAY2_DIR), "logs")
+#         bw2data.projects.db = bw2data.sqlite.SubstitutableDatabase(os.path.join(str(BRIGHTWAY2_DIR), "projects.db"), [bw2data.project.ProjectDataset])
+#         bw2data.projects.set_current("default", update = False)
+    
+#     change_brightway_project_directory(str(here / "Brightway2_projects"))
+#     project_name: str = "Food databases"
+#     bw2data.projects.set_current(project_name)
+    
+#     acts: list = [m for m in bw2data.Database("AgriFootprint v6.3 - SimaPro")]
+#     mets: list[tuple] = [m for m in bw2data.methods][0]
+    
+#     lca_calculation: LCA_Calculation = LCA_Calculation(activities = acts,
+#                                                        methods = mets,
+#                                                        functional_amount = 1,
+#                                                        cut_off_percentage = None,
+#                                                        exchange_level = 1)
+    
+#     lca_calculation.calculate(calculate_LCIA_scores = False,
+#                               extract_LCI_exchanges = False,
+#                               extract_LCI_emission_contribution = False,
+#                               extract_LCI_process_contribution = True,
+#                               calculate_LCIA_scores_of_exchanges = False,
+#                               calculate_LCIA_emission_contribution = False,
+#                               calculate_LCIA_process_contribution = False)
+    
+#     contribution_results = lca_calculation.get_results(extended = True)
+        
 
 

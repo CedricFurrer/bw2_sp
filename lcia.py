@@ -688,14 +688,16 @@ def append_missing_regionalized_flows_to_methods(biosphere_standardized: dict,
     # Print statement
     if verbose:
         print(str(counter) + " methods were changed\n")
-
-    # Summarize
-    df_method_change_logger_detailed = pd.DataFrame(method_change_logger_detailed).groupby(["flow_name", "method", "changed"]).size().reset_index(name = "amount_of_flows_added")
+    
+    if len(method_change_logger_detailed) > 0:
+    
+        # Summarize
+        df_method_change_logger_detailed = pd.DataFrame(method_change_logger_detailed).groupby(["flow_name", "method", "changed"]).size().reset_index(name = "amount_of_flows_added")
+        df_method_change_logger_detailed.to_excel(logs_output_path / "Flow_names_added_to_methods.xlsx")
 
     # Write to loggers to XLSX
     pd.DataFrame(global_factors_not_available).to_excel(logs_output_path / "Methods_where_global_CF_factors_not_available.xlsx")
     pd.DataFrame(method_change_logger).to_excel(logs_output_path / "Amount_of_CFs_added_to_methods.xlsx")
-    df_method_change_logger_detailed.to_excel(logs_output_path / "Flow_names_added_to_methods.xlsx")
     
     # Print statement
     if verbose:
@@ -895,6 +897,9 @@ def register_biosphere(Brightway_project_name: str,
     
     # ... and write biosphere flows to a new biosphere database
     bw2data.Database(biosphere_db_name).write(deepcopied_biosphere_dict)
+    
+    # Configurate biosphere_db_name as the biosphere database
+    bw2data.config.p["biosphere_database"] = biosphere_db_name
 
 
 def import_SimaPro_LCIA_methods(path_to_SimaPro_CSV_LCIA_files: pathlib.Path,

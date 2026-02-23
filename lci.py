@@ -40,32 +40,51 @@ starting: str = "------------"
 
 
 #%% LCI strategies
-def change_database_name_and_remove_code(db_var,
-                                         new_database_name: str,
-                                         list_of_types: list = ["production"]):
+
+def select_inventory_using_regex(db_var, exclude: bool, include: bool, patterns: list, case_sensitive: bool = True):
     
-    # Make variable check
-    hp.check_function_input_type(change_database_name_and_remove_code, locals())
+    # Check function input type
+    hp.check_function_input_type(select_inventory_using_regex, locals())
     
-    # Loop through each inventory
+    # Raise error if exlude and include was both specified. This is not possible
+    if exclude and include:
+        raise ValueError("Parameters 'include' and 'exclude' can not be True at the same time. It is only possible to either exlude or include.")
+    
+    # If exlude nor include was specified, just return the database in its original state
+    if not exclude and not include:
+        return db_var
+    
+    # We also return the database if no patterns were specified, because selecting does not make sense without a pattern
+    if patterns == []:
+        return db_var
+    
+    # Merge the different patterns to a string
+    pattern_string = "|".join([str(m) for m in patterns]).lower()
+    
+    # Initialize a new list to store the new inventories to
+    new_db_var = []
+    
+    # Loop through each inventory and select whether to in- or exlude it based on patterns
     for ds in db_var:
         
-        # Rename
-        ds["database"] = new_database_name
+        # Check if the pattern is contained in the SimaPro name
+        contained = bool(re.search(pattern_string, ds["SimaPro_name"].lower()))
         
-        # Delete existing code
-        try: del ds["code"]
-        except: pass
+        # Remove, if specified and the pattern is contained
+        if contained and exclude:
+            continue
         
-        # Loop through each exchange of that inventory
-        for exc in ds["exchanges"]:
+        # Otherwise, if the pattern is not contained, we keep the inventory (by adding it to the new list)
+        elif not contained and exclude:
+            new_db_var += [ds]
+            continue
+        
+        # If the pattern is contained and we want to include the pattern, write the dataset to the new list
+        elif contained and include:
+            new_db_var += [ds]
+            continue
             
-            # Rename
-            if exc["type"] in list_of_types:
-                exc["database"] = new_database_name
-                
-    return db_var
-
+    return new_db_var
 
 
 def extract_geography_from_SimaPro_name(db_var,
@@ -269,7 +288,7 @@ def set_code(db_var,
     
     # Raise error if rows are found that do not contain all information according to the fields specified
     if len(rows_with_nan) > 0:
-        raise ValueError("Some rows in file 'data_UUIDs.xlsx' contain missing fields. Check indexes:\n" + "\n".join([" - " + str(m + 1) for m in list(rows_with_nan.index)]))
+        raise ValueError("Some rows in file 'UUIDs.xlsx' contain missing fields.")
     
     # Loop through each line in the excel file
     for item in UUIDs_orig.to_dict("records"):
@@ -461,12 +480,6 @@ def add_allocation_field(db_var):
     # Loop through each inventory
     for ds in db_var:
         
-        # For waste treatments, unfortunately no allocation is specified
-        # We assume that there is always only one product and therefore the allocation is 1.
-        if ds["SimaPro_categories"] == (SIMAPRO_TECHNOSPHERE_COMPARTMENTS["waste_to_treatment"],):
-            ds["allocation"]: float = float(1)
-            continue
-        
         # Initialize a list to store all allocation factors
         allocations: list = []
         
@@ -475,6 +488,11 @@ def add_allocation_field(db_var):
             
             # Check if current exchange is of type production
             if exc["type"] == "production":
+                
+                # For waste treatments, unfortunately no allocation is specified
+                # We assume that there is always only one product and therefore the allocation is 100%.
+                if ds["SimaPro_categories"] == (SIMAPRO_TECHNOSPHERE_COMPARTMENTS["waste_to_treatment"],):
+                    exc["allocation"]: float = float(100)
                 
                 # Extract allocation
                 allocation: (float | None) = exc.get("allocation")
@@ -523,26 +541,10 @@ def remove_exchanges_with_zero_amount(db_var):
     # Loop through each inventory
     for ds in db_var:
         
-        # Initialize an empty list to store all exchanges that have an amount other than 0
-        exchanges: list = []
+        # Loop through the whole list of exchanges and keep only the ones that are of type production or where amount is greater than 0
+        ds["exchanges"]: list[dict] = [exc for exc in ds["exchanges"]
+                                       if exc["type"] == "production" or exc["amount"] != 0]
         
-        # Loop through all exchanges
-        for exc in ds["exchanges"]:
-            
-            # Check if the amount of the current exchange is 0
-            # If yes, do not add it (= erase it)
-            if exc["amount"] == 0:
-                
-                # However, we do not add it only if it is not of type production
-                if exc["type"] != "production":
-                    continue
-            
-            # Otherwise, if amount is other than 0, add
-            exchanges += [exc]
-        
-        # Overwrite the old exchanges with the list of new exchanges
-        ds["exchanges"]: list = copy.deepcopy(exchanges)
-
     return db_var
 
 
@@ -620,45 +622,72 @@ def unregionalize_biosphere(db_var):
                 
     return db_var
             
+# # !!! ERASE
+# fields: tuple = ("name", "unit", "location")
+# FROM_tuple: tuple = ("Banana", "kilogram", "USA")
+# TO_dict_1: dict = {"name": "Banana 1", "location": "CH"}
+# multiplier_1 = 0.22
+# TO_dict_2: dict = {"name": "Banana 2", "location": "RER"}
+# multiplier_2 = 0.78
 
-def create_structured_migration_dictionary_from_excel(excel_dataframe: pd.DataFrame):
+# migration_dict_structure: dict = {
+#     "fields": fields,
+#     "data": [
+#         (FROM_tuple,
+#          [
+#              (TO_dict_1, multiplier_1),
+#              (TO_dict_2, multiplier_2)
+#          ]
+#         )
+#         ]
+#     }
+# # !!! ERASE
+
+def create_structured_migration_dictionary_from_excel(excel_dataframe: pd.DataFrame) -> dict[str, list[tuple] | dict[tuple, list[dict]]]:
     
     # Check function input type
     hp.check_function_input_type(create_structured_migration_dictionary_from_excel, locals())
     
     # Fill NaN values with empty string
-    df: pd.DataFrame = excel_dataframe.fillna("")
+    df: pd.DataFrame = excel_dataframe.replace({float("NaN"): None})
     
     # Extract columns
-    cols: list[str] = list(df.columns)
+    cols: list[str] = [str(m) for m in list(df.columns)]
     
     # Separate FROM and TO columns
     FROM_cols: list[str] = [m for m in cols if "FROM_" in m]
-    TO_cols: list[str] = [m for m in cols if "TO_" in m or m == "multiplier"]
+    TO_cols: list[str] = [m for m in cols if "TO_" in m]
+    multiplier_cols: list[str] = [m for m in cols if "multiplier" in m.strip().lower()]
+    multiplier_col: (str | None) = multiplier_cols[0] if len(multiplier_cols) > 0 else None
     
     # We need information for all FROM cols. Otherwise, the excel is invalid
-    if any([[n for n in list(df[m]) if n == ""] != [] for m in FROM_cols]):
+    if any([[n for n in list(df[m]) if n is None] != [] for m in FROM_cols]):
         raise ValueError("Invalid migration Excel. Some of the FROM columns contain empty values.")
     
     # Create fields --> all names from the FROM columns
     fields: list[str] = [m.replace("FROM_", "") for m in FROM_cols]
     
     # Initialize a list for the 'data'
-    data: list = []
+    _data: dict = {}
     
     # Loop through each row in the dataframe
     for idx, row in df.iterrows():
         
-        # The first element is the identifier (uses the FROM cols)
-        element_1: tuple = tuple([row[m] for m in FROM_cols])
+        # Extract the FROM and the multiplier of the current line
+        FROM: tuple = tuple([row[m] for m in FROM_cols])
+        multiplier: float = row[multiplier_col] if multiplier_col is not None and row.get(multiplier_col) is not None else float(1)
         
-        # The second element specifies which fields should be mapped to which values (uses TO cols)
-        element_2 = {(m.replace("TO_", "")): row[m] for m in TO_cols if row[m] != ""}
+        # Initialize new object in dictionary for the FROM, if not yet existing
+        if FROM not in _data:
+            _data[FROM]: list = []
         
-        # Append to the data list
-        data += [(element_1, element_2)]
-        
-    return {"fields": fields, "data": data} 
+        # Extract the TO as a dictionary
+        TO: dict = {(m.replace("TO_", "")): row[m] for m in TO_cols if row[m] is not None}
+
+        # Add the tuple to the list
+        _data[FROM] += [(TO, multiplier)]
+
+    return {"fields": fields, "data": [(FROM, TOs) for FROM, TOs in _data.items()]}
     
 
 def create_migration_mapping(json_dict: dict):
@@ -670,27 +699,27 @@ def create_migration_mapping(json_dict: dict):
     if "data" not in json_dict or "fields" not in json_dict:
         raise ValueError("Invalid migration dictionary. 'data' and 'fields' need to be provided.")
     
-    # 'data' needs to be a list
-    if not isinstance(json_dict["data"], list):
-        raise ValueError("Invalid migration dictionary. 'data' needs to be a list.")
+    # 'data' needs to be a dict
+    if not isinstance(json_dict["data"], list): 
+        raise ValueError("Invalid migration dictionary. 'data' needs to be a list containing tuples.") 
     
-    # More specifically, 'data' needs to be a list of lists which contains a list as a first element and a dictionary as a second element
-    if not all([True if isinstance(m[0], list | tuple) and isinstance(m[1], dict) else False for m in json_dict["data"]]):
-        raise ValueError("Invalid migration dictionary. 'data' needs to be a list of list which contains a list as a first element and a dictionary as a second element.")
+    # More specifically, 'data' needs to be a list with tuples or list of length 2. The first one is the FROM, the second one TO
+    if not all([True if isinstance(m, list | tuple) and isinstance(n, list | tuple) else False for m, n in json_dict["data"]]):
+        raise ValueError("Invalid migration dictionary. 'data' needs to be a list or a tuple consisting of elements that are again lists or tuples of length 2.")
     
-    # 'fields' needs to be a list
+    # 'fields' needs to be a list or a tuple
     if not isinstance(json_dict["fields"], list | tuple):
-        raise ValueError("Invalid migration dictionary. 'fields' needs to be a list.")
+        raise ValueError("Invalid migration dictionary. 'fields' needs to be a list or a tuple.")
     
     # 'fields' needs to be a list of strings
     if not all([isinstance(m, str) for m in json_dict["fields"]]):
-        raise ValueError("Invalid migration dictionary. 'fields' needs to be a list of strings.")
+        raise ValueError("Invalid migration dictionary. 'fields' needs to be a list or tuple of strings.")
          
     # Initialize mapping dictionary
     mapping: dict = {}
 
     # Construct mapping dictionary. Looping through all elements
-    for FROM_orig, TO_orig in json_dict["data"]:
+    for FROM_orig, TOs in json_dict["data"]:
         
         # First, we need to adapt the FROMs and the TOs
         # We use ast literal to evaluate the elements and merge them to the corresponding Python type
@@ -698,48 +727,70 @@ def create_migration_mapping(json_dict: dict):
         
         # Initialize new variables
         FROM_tuple: tuple = ()
-        TO_dict: dict = {}
+        TO_dicts: dict = {}
         
-        # Loop through each element from the FROM list
-        for x in FROM_orig:
+        if isinstance(FROM_orig, list | tuple):
             
-            # Evaluate, if possible. Otherwise, use the value as it is right now
-            try: xx = ast.literal_eval(x)
-            except: xx = x
-            
-            # Convert list to tuples
-            if isinstance(xx, list):
-                xx = tuple(xx)
-            
-            # Append to variable
-            FROM_tuple += (xx,)
-           
-        # Loop through each key/value pair of the TO element
-        for y, z in TO_orig.items():
-            
-            # Evaluate, if possible. Otherwise, use the value as it is right now
-            try: yy = ast.literal_eval(y)
-            except: yy = y
-            
-            # Evaluate, if possible. Otherwise, use the value as it is right now
-            try: zz = ast.literal_eval(z)
-            except: zz = z
-            
-            # Convert list to tuples
-            if isinstance(yy, list):
-                yy = tuple(yy)
+            # Loop through each element from the FROM list
+            for x in FROM_orig:
                 
-            # Convert list to tuples
-            if isinstance(zz, list):
-                zz = tuple(zz)
-            
-            # Append to variable
-            TO_dict[yy] = zz
+                # Evaluate, if possible. Otherwise, use the value as it is right now
+                try: xx = ast.literal_eval(x)
+                except: xx = x
+                
+                # Convert list to tuples
+                if isinstance(xx, list):
+                    xx = tuple(xx)
+                
+                # Append to variable
+                FROM_tuple += (xx,)
+         
+        elif isinstance(FROM_orig, str):
+             FROM_tuple: tuple = ast.literal_eval(FROM_orig)
+             
+        else:
+            raise ValueError("Did not catch the key {} with type {} when creating the migration mapping.".format(FROM_orig, type(FROM_orig).__name__))
+         
+        # Check if FROM_tuple already exists in the mapping dictionary. This should not be the case.
+        if FROM_tuple in mapping:
+            raise ValueError("FROM_tuple has already been introduced in the mapping and should not be introduced again considering that the migration dictionary is of consistent nature.")
         
-        # Append to mapping variable
-        mapping[FROM_tuple] = TO_dict
+        # Initialize new list to append to
+        mapping[FROM_tuple]: list = []
+        
+        # Loop through each TO element to map to
+        for TO_orig, multiplier in TOs:
+            
+            # Initialize new dictionary
+            TO_dict: dict = {}
+        
+            # Loop through each key/value pair of the TO element
+            for y, z in TO_orig.items():
+                
+                # Evaluate, if possible. Otherwise, use the value as it is right now
+                try: yy = ast.literal_eval(y)
+                except: yy = y
+                
+                # Evaluate, if possible. Otherwise, use the value as it is right now
+                try: zz = ast.literal_eval(z)
+                except: zz = z
+                
+                # Convert list to tuples
+                if isinstance(yy, list):
+                    yy = tuple(yy)
+                    
+                # Convert list to tuples
+                if isinstance(zz, list):
+                    zz = tuple(zz)
+                
+                # Append to variable
+                TO_dict[yy] = zz
+                
+            # Append dictionary to existing list
+            mapping[FROM_tuple] += [(TO_dict, multiplier)]
         
     return tuple(json_dict["fields"]), mapping
+
 
 
 def apply_migration_mapping(db_var,
@@ -752,8 +803,8 @@ def apply_migration_mapping(db_var,
     hp.check_function_input_type(apply_migration_mapping, locals())
     
     # Amount fields to which the 'multiplier' should be applied to
-    amount_fields_ds = ["production amount", "output amount"]
-    amount_fields_exc = ["amount", "loc", "scale", "shape", "minimum", "maximum"]
+    amount_fields_ds: list[str] = ["production amount", "output amount"]
+    amount_fields_exc: list[str] = ["amount", "loc", "scale", "shape", "minimum", "maximum"]
     
     # Migration counter
     n_ds: int = 0
@@ -763,51 +814,14 @@ def apply_migration_mapping(db_var,
     dup_ds: dict = {}
     dup_exc: dict = {}
     
+    # Create new list to be returned afterwards
+    new_db_var: list[dict] = []
+    
     # Loop through each element in the current database data (inventory)
     for ds in db_var:
         
-        # Check if activities should be migrated
-        if migrate_activities:
-        
-            # We try to find a suitable entry of the migration mapping for the current inventory
-            # If yes (= no key errors), we replace the values of the current inventory with the ones from the migration mapping
-            try:
-                # We first extract the respective information of the fields of the current inventory with which we search in the migration mapping
-                ds_ID = tuple([ds[m] for m in fields])
-                
-                # We check if we find a corresponding item in the migration mapping
-                map_to = migration_mapping[ds_ID]
-                
-                # If yes, we loop through each key/value pair
-                for ds_k_new, ds_v_new in map_to.items():
-                    
-                    # If we find the 'multiplier', it is a bit special
-                    # It is not a simple replacement, but we rather apply the multiplier to any 'amount' field
-                    if ds_k_new == "multiplier":
-                        
-                        # We loop through all the amount fields (specified above) individually
-                        for amount_field_ds in amount_fields_ds:
-                            
-                            # If it exists in the current dictionary, we update the field
-                            # We multiply the current value with the multiplier value
-                            if amount_field_ds in ds:
-                                ds[amount_field_ds] *= ds_v_new
-                                
-                        continue
-                        
-                    # We replace (or add if not existing) the values of the keys in the inventory
-                    ds[ds_k_new] = ds_v_new
-                    
-                # Increase counter
-                if dup_ds.get(ds_ID) is None:
-                    n_ds += 1
-                    dup_ds[ds_ID]: bool = True
-                    
-            except:
-                # If we encounter a key error, we go on.
-                # A key error means, there is either no corresponding item for the current inventory in the migration mapping
-                # or some of the fields are not present in the inventory
-                pass
+        # Initialize a new list object to store exchanges to
+        new_exchanges: list = []
         
         # We do the same as above also for the exchanges
         # Loop through each exchange of the current inventory
@@ -817,53 +831,119 @@ def apply_migration_mapping(db_var,
             if migrate_exchanges:
             
                 # We try to find a suitable entry of the migration mapping for the current exchange
-                # If yes (= no key errors), we replace the values of the current exchange with the ones from the migration mapping
-                try:
-                    # We first extract the respective information of the fields of the current exchange with which we search in the migration mapping
-                    exc_ID = tuple([exc[m] for m in fields])
+                # If possible, we replace the values of the current exchange with the ones from the migration mapping
+
+                # We first extract the respective information of the fields of the current exchange with which we search in the migration mapping
+                exc_ID: tuple = tuple([exc[m] for m in fields if m in exc])
+                
+                # We check if we find a corresponding item in the migration mapping
+                map_tos: (tuple[dict, float] | None) = migration_mapping.get(exc_ID)
                     
-                    # We check if we find a corresponding item in the migration mapping
-                    map_to = migration_mapping[exc_ID]
+                # Go on only if a mappable has been found
+                if map_tos is not None:
                     
-                    # If yes, we loop through each key/value pair
-                    for exc_k_new, exc_v_new in map_to.items():
+                    # Loop through each mappable item
+                    for map_to in map_tos:
+                    
+                        # Deepcopy the existing exchange
+                        exc_copied: dict = copy.deepcopy(exc)    
+                    
+                        # We loop through each key/value pair
+                        for exc_k_new, exc_v_new in map_to[0].items():
+                            
+                            # We replace (or add if not existing) the values of the keys in the exchange
+                            exc_copied[exc_k_new] = exc_v_new
                         
-                        # If we find the 'multiplier', it is a bit special
-                        # It is not a simple replacement, but we rather apply the multiplier to any 'amount' field
-                        if exc_k_new == "multiplier":
+                        # We loop through all the amount fields (specified above) individually and add the multiplier
+                        for amount_field_exc in amount_fields_exc:
                             
-                            # We loop through all the amount fields (specified above) individually
-                            for amount_field_exc in amount_fields_exc:
+                            # If it exists in the current dictionary, we update the field
+                            # We multiply the current value with the multiplier value
+                            if amount_field_exc in exc_copied:
+                                exc_copied[amount_field_exc] *= map_to[1]
                                 
-                                # If it exists in the current dictionary, we update the field
-                                # We multiply the current value with the multiplier value
-                                if amount_field_exc in exc:
-                                    exc[amount_field_exc] *= exc_v_new
-                                    
-                            # We need to update the negative key
-                            if "negative" in exc:
-                                exc["negative"] = exc["amount"] < 0
-                                    
-                            continue
-                            
-                        # We replace (or add if not existing) the values of the keys in the exchange
-                        exc[exc_k_new] = exc_v_new
+                        # We need to update the negative key
+                        if "negative" in exc_copied:
+                            exc_copied["negative"] = exc_copied["amount"] < 0
+                        
+                        # Add new exchange to list
+                        new_exchanges += [exc_copied]
                         
                     # Increase counter
                     if dup_exc.get(exc_ID) is None:
                         n_exc += 1
                         dup_exc[exc_ID]: bool = True
+                
+                else:
+                    # Simply add the already existing exchange without any modification to the new list
+                    new_exchanges += [exc]
+                
+            else:
+                # Simply add the already existing exchange without any modification to the new list
+                new_exchanges += [exc]
+        
+        
+        
+        # Check if activities should be migrated
+        if migrate_activities:
+        
+            # We try to find a suitable entry of the migration mapping for the current inventory
+            # If possible, we replace the values of the current inventory with the ones from the migration mapping
+                
+            # We first extract the respective information of the fields of the current inventory with which we search in the migration mapping
+            ds_ID: tuple = tuple([ds[m] for m in fields if m in ds])
+            
+            # We check if we find a corresponding list in the migration mapping
+            map_tos: (tuple[dict, float] | None) = migration_mapping.get(ds_ID)
+            
+            # We can only go on, if a mapping has been found
+            if map_tos is not None:
+                
+                # Loop through each mappable item
+                for map_to in map_tos:
+                    
+                    # Deepcopy the existing activity
+                    ds_copied: dict = copy.deepcopy(ds) 
+                
+                    # We loop through each key/value pair
+                    for ds_k_new, ds_v_new in map_to[0].items():
                         
-                except:
-                    # If we encounter a key error, we go on.
-                    # A key error means, there is either no corresponding item for the current exchange in the migration mapping
-                    # or some of the fields are not present in the exchange
-                    pass
+                        # We replace (or add if not existing) the values of the keys in the exchange
+                        ds_copied[ds_k_new] = ds_v_new
+                        
+                    # We loop through all the amount fields (specified above) individually and add the multiplier
+                    for amount_field_ds in amount_fields_ds:
+                        
+                        # If it exists in the current dictionary, we update the field
+                        # We multiply the current value with the multiplier value
+                        if amount_field_ds in ds_copied:
+                            ds_copied[amount_field_ds] *= map_to[1]
+                    
+                    # Add the copied activity with the modifications together with the new list of exchanges to the new database list
+                    new_db_var += [{**ds_copied,
+                                    "exchanges": new_exchanges}]
+                    
+                # Increase counter
+                if dup_ds.get(ds_ID) is None:
+                    n_ds += 1
+                    dup_ds[ds_ID]: bool = True
+                    
+                
+            else:
+                # Simply add the already existing activity with the new list of exchanges to the new database list
+                new_db_var += [{**ds,
+                                "exchanges": new_exchanges}]
+        
+        else:
+            # Simply add the already existing activity with the new list of exchanges to the new database list
+            new_db_var += [{**ds,
+                            "exchanges": new_exchanges}]
     
     # Print the amount of migrated ds and exc
     print("Migrated {} unique inventories and {} unique exchanges".format(n_ds, n_exc))
             
-    return db_var
+    return new_db_var
+
 
 
 def migrate_from_json_file(db_var,
@@ -1456,6 +1536,7 @@ def import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths: list,
                                    db_name: str,
                                    encoding: str = "latin-1",
                                    delimiter: str = "\t",
+                                   link_internally : bool = True,
                                    verbose: bool = True,
                                    ) -> bw2io.importers.base_lci.LCIImporter:
     
@@ -1565,13 +1646,15 @@ def import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths: list,
     # NOTE: to get to the original amount, we need to multiply the production amount with the allocation factor. We also need to do that after having transformed units. Otherwise, the unit of other fields is adapted but not the output amount, which leads to a wronge value for the output amount.
     db: list[dict] = add_output_amount_field(db)
     
+    # ... after discussion, duplicates should not happen, therefore if there are any, the collaborator should be aware of it and delete them manually
+    # removing them in this script would not be transparent and could remove the wrong one
     # ... we can not write duplicates and therefore need to remove them before
     # we can specify the fields which should be used to identify the duplicates
-    db: list[dict] = remove_duplicates(db,
-                                       fields = ("name", "unit", "location"),
-                                       strip = True,
-                                       case_insensitive = True,
-                                       remove_special_characters = False)
+    # db: list[dict] = remove_duplicates(db,
+    #                                    fields = ("name", "unit", "location"),
+    #                                    strip = True,
+    #                                    case_insensitive = True,
+    #                                    remove_special_characters = False)
         
     # ... exchanges that have an amount of 0 will not contribute to the environmental impacts
     # we can therefore remove them
@@ -1581,15 +1664,16 @@ def import_SimaPro_LCI_inventories(SimaPro_CSV_LCI_filepaths: list,
     db: list[dict] = identify_and_detoxify_SimaPro_name_of_ecoinvent_inventories(db)
     
     # Apply internal linking of activities
-    db: list[dict] = link.link_activities_internally(db,
-                                                     production_exchanges = True,
-                                                     substitution_exchanges = True,
-                                                     technosphere_exchanges = True,
-                                                     relink = False,
-                                                     strip = True,
-                                                     case_insensitive = True,
-                                                     remove_special_characters = False,
-                                                     verbose = verbose)
+    if link_internally :
+        db: list[dict] = link.link_activities_internally(db,
+                                                         production_exchanges = True,
+                                                         substitution_exchanges = True,
+                                                         technosphere_exchanges = True,
+                                                         relink = False,
+                                                         strip = True,
+                                                         case_insensitive = True,
+                                                         remove_special_characters = False,
+                                                         verbose = verbose)
     
     # As brightway importer object    
     db_as_obj: bw2io.importers.base_lci.LCIImporter = bw2io.importers.base_lci.LCIImporter(db_name)

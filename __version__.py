@@ -1,5 +1,5 @@
 
-__version__: tuple = (1, 0, 0)
+__version__: tuple = (1, 0, 1)
 
 # Works with the following packages and versions
 
